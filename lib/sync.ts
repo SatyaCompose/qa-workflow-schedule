@@ -175,6 +175,46 @@ export async function runSync(): Promise<SyncResult> {
     }
 
     const seenGids = upserts.map((u) => u.task_gid);
+
+    // Before archiving, find which tickets are *about* to be archived.
+    // If any of them was in a QA-verify priority (P1/P2/P3), credit the
+    // current assignee — they almost certainly finished their verification
+    // and the ticket then left scope (reassigned away, moved out of sprint,
+    // completed in Asana, etc.). Without this, the credit is silently lost.
+    const buildToArchiveQuery = () => {
+      let q = db
+        .from("tickets")
+        .select("task_gid, task_name, task_url, priority, dev_status, assigned_to, assigned_to_gid, sprint")
+        .eq("archived", false);
+      if (seenGids.length) {
+        q = q.not("task_gid", "in", `(${seenGids.map((g) => `"${g}"`).join(",")})`);
+      }
+      return q;
+    };
+    const { data: toArchive, error: toArchiveErr } = await buildToArchiveQuery();
+    if (toArchiveErr) throw toArchiveErr;
+
+    const archiveCompletions = (toArchive ?? [])
+      .filter((t) => t.priority && QA_PRIORITIES.has(t.priority))
+      .map((t) => ({
+        task_gid: t.task_gid,
+        task_name: t.task_name,
+        task_url: t.task_url,
+        completed_at: now,
+        completed_date: today,
+        completed_by: t.assigned_to,
+        completed_by_gid: t.assigned_to_gid,
+        from_priority: t.priority,
+        to_priority: null,           // null = ticket exited scope
+        from_dev_status: t.dev_status,
+        to_dev_status: null,
+        sprint: t.sprint,
+      }));
+    if (archiveCompletions.length) {
+      const { error } = await db.from("completions").insert(archiveCompletions);
+      if (error) throw error;
+    }
+
     let archivedCount = 0;
     if (seenGids.length) {
       const { count, error } = await db
@@ -269,7 +309,14 @@ export async function runSync(): Promise<SyncResult> {
         .eq("id", runId);
     }
 
-    return { ok: true, newCount, seenCount, archivedCount, completionCount: completions.length, penaltyCount };
+    return {
+      ok: true,
+      newCount,
+      seenCount,
+      archivedCount,
+      completionCount: completions.length + archiveCompletions.length,
+      penaltyCount,
+    };
   } catch (err: any) {
     const msg = err?.message ?? String(err);
     if (runId) {

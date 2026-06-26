@@ -1,193 +1,258 @@
 # QA Work Allotment
 
-Reads tasks from **specific sprint sections** in an Asana project that are
-assigned to **2 source users**, splits them across **3 target users**
-(round-robin with stability), persists every ticket ever seen in Supabase,
-and exposes a website + downloadable monthly Excel files (one tab per day).
-A GitHub Actions workflow re-runs the sync every hour between
-**6:00 AM and 10:00 PM IST**. The dashboard also lets an admin **manually
-reassign** a ticket. **Asana is never written to** — this app only reads.
+A small Next.js app that reads tickets from **specific Asana sprint projects**
+assigned to the **2 source users**, splits them across **3 QA targets**
+(load-balanced with stability + Asana-account lock), and tracks each QA's
+work output as a **credit ledger** (completions = +1, end-of-day unfinished
+P1s = −1). Sync runs every 15 minutes during IST working hours. Asana is
+strictly read-only — assignments and credits live only in Supabase + Excel.
 
-## How it works
+## Architecture
 
 ```
-GH Actions (hourly) ──▶ /api/cron/sync ──▶ runSync()
-                                              │
-                                              ├─ Asana API (read-only): for each
-                                              │  sprint section GID, fetch incomplete
-                                              │  tasks assigned to the 2 source users
-                                              ├─ splitWithStability(): existing
-                                              │  rows keep their target; new
-                                              │  rows are round-robin assigned
-                                              ├─ upsert into `tickets`
-                                              └─ archive rows no longer in Asana
-                                                 (kept in DB, flagged archived)
+GH Actions (every 15 min, 06:00–22:00 IST)
+       │
+       └─▶ GET /api/cron/sync (Bearer CRON_SECRET)
+                │
+                ├─ Discover sprint projects (workspace-wide, prefix-match)
+                ├─ Fetch incomplete tasks from each, filter to source users
+                ├─ Sort tasks (sprint age → QA priority → gid)
+                ├─ Splitter:
+                │     1. manual override (sticky)
+                │     2. Asana-account lock (e.g. Anand's tickets → Anand)
+                │     3. existing assignment (stability)
+                │     4. load balance by remaining capacity
+                ├─ Upsert into `tickets`, mark missing rows archived
+                ├─ Snapshot today's rows into `daily_snapshots`
+                ├─ Detect QA-priority transitions  → +1 row in `completions`
+                └─ If IST ≥ 22 on a weekday, any active P1 → −1 row in `penalties`
 
-Each sync also rewrites today's row in `daily_snapshots` (a frozen daily
-history table). Past days never change.
-
-Browser ──▶ /                          dashboard (counts + reassign UI)
-        ──▶ /api/download?month=YYYY-MM xlsx for that IST month
-                                       (one worksheet per day, grouped
-                                        by assignee within each sheet)
-        ──▶ POST /api/admin/reassign   manual override (Basic Auth)
+Browser ──▶ /              Dashboard: team status + active tickets (sprint→priority)
+        ──▶ /ledger        Live spreadsheet: all tickets + filters + auto-refresh
+        ──▶ /help          Plain-English documentation of every concept
+        ──▶ /api/download  Single-sheet xlsx of every ticket (current state)
+        ──▶ POST /api/admin/reassign        Manual override (Basic Auth)
+        ──▶ POST /api/admin/target-status   Set leave/regression (Basic Auth)
 ```
-
-Archived rows are **never deleted** — they keep `first_seen` / `last_seen` and
-show up in the dashboard and Excel under "Archived."
 
 ## Setup
 
 ### 1. Supabase
-1. Create a project at https://supabase.com (free tier is fine).
-2. Open the SQL editor and run `supabase/schema.sql`.
-3. Project Settings → API. Copy:
-   - **Project URL** → `SUPABASE_URL`
-   - **service_role** key → `SUPABASE_SERVICE_ROLE_KEY` (server-only!)
 
-### 2. Asana GIDs
-You need: sprint section GIDs + 2 source user GIDs + 3 target user GIDs.
+1. Create a project at https://supabase.com (free tier is enough).
+2. SQL Editor → paste `supabase/schema.sql` → Run.
+3. Settings → API → copy:
+   - **Project URL** (no `/rest/v1/` suffix) → `SUPABASE_URL`
+   - **`service_role` secret** (NOT the anon key) → `SUPABASE_SERVICE_ROLE_KEY`
 
-Sprint section GIDs are visible in the Asana web URL when you click into a
-section/list. The URL looks like:
+### 2. Asana setup
 
-```
-https://app.asana.com/0/project/<PROJECT_GID>/list/<SECTION_GID>
-```
+You need:
+- **Workspace GID** — from your Asana URL: `app.asana.com/1/<WORKSPACE_GID>/...`
+- **Source user GIDs** (the 2 people whose tickets we pull) — from the profile URL: `/profile/<USER_GID>`
+- **Sprint project name prefixes** — e.g. `Sprint 12` to match `"Sprint 12 - 2026 - Website Development"`
+- **Target user names** — your QA team. They do NOT need Asana accounts. Optionally, attach an Asana GID for "self-locking" behavior (e.g. tickets assigned to Anand in Asana stay with target Anand).
 
-The `<SECTION_GID>` after `/list/` is what goes into `ASANA_SPRINT_GIDS`.
-You can also list sections via the API:
+### 3. Environment variables
 
 ```bash
-curl -H "Authorization: Bearer $ASANA_TOKEN" \
-  "https://app.asana.com/api/1.0/projects/<PROJECT_GID>/sections"
-```
+# Asana (read-only)
+ASANA_TOKEN=2/...                                # Personal access token
+ASANA_WORKSPACE_GID=194367843040
 
-User GIDs:
-```bash
-curl -H "Authorization: Bearer $ASANA_TOKEN" \
-  "https://app.asana.com/api/1.0/users?workspace=<WORKSPACE_GID>"
-```
-
-Set in `.env`:
-```
-ASANA_WORKSPACE_GID=<workspace_gid>     # from the Asana URL: app.asana.com/1/<workspace>/...
+# The 2 source users (have Asana accounts)
 ASANA_SOURCE_USER_GIDS=<gid1>,<gid2>
-ASANA_SPRINTS=Sprint 12,Sprint 13       # comma-separated project-name prefixes
-                                        # (case-insensitive "starts with" against project names)
-TARGET_USERS=Person 1,Person 2,Person 3 # names only — target users do not
-                                        # need Asana accounts; they live only in this app
+
+# Sprint project name prefixes. Order = age: first listed is oldest = highest priority.
+# Case-insensitive "starts with" against project names.
+ASANA_SPRINTS=Sprint 12,Sprint 13
+
+# Targets. Each entry is either:
+#   "Name"              — no Asana account (e.g. Vardhan)
+#   "Name:asana_gid"    — Asana-account lock (their Asana tickets always stay with them)
+TARGET_USERS=Nrushimha:<gid>,Vardhan,Anand:<gid>
+
+# Supabase
+SUPABASE_URL=https://xxx.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=eyJ...
+
+# Auth secrets
+CRON_SECRET=...                                  # openssl rand -hex 32
+ADMIN_PASSWORD=...                               # for /api/admin/* Basic Auth
 ```
 
-**How sprint matching works:** Each entry in `ASANA_SPRINTS` is matched as a
-case-insensitive prefix against your Asana project names. So `Sprint 12`
-matches a project called `"Sprint 12 - 2026 - Website Development"`. Tickets
-are fetched from each matching project.
+### 4. Run locally
 
-**Order matters:** the first sprint listed is treated as the oldest (highest
-priority). To track an additional sprint later, append its prefix to the list.
-
-### 3. Install + run locally
 ```bash
 npm install
-npm run sync:local      # one-shot sync against your DB
+npm run sync:local      # one-shot sync; prints JSON result
 npm run dev             # http://localhost:3000
 ```
 
-### 4. Deploy to Vercel
-Import the GitHub repo at https://vercel.com/new, then in **Project Settings
-→ Environment Variables** add every var from `.env.example` for the
-**Production** environment. Generate a random string for `CRON_SECRET`
-(e.g., `openssl rand -hex 32`).
+### 5. Deploy to Vercel
 
-### 5. Configure GitHub Actions (hourly trigger)
-Vercel Hobby plan only allows daily cron jobs, so we trigger the sync from
-GitHub Actions instead. The workflow lives at `.github/workflows/sync.yml`
-and runs hourly between 06:00 and 22:00 IST (17 runs/day). The schedule
-in the workflow file is in UTC (`30 0-16 * * *`).
+Import the GitHub repo at https://vercel.com/new → Add every env var above
+(Production scope) → Deploy.
 
-In the GitHub repo, **Settings → Secrets and variables → Actions → New
-repository secret**, add:
+### 6. GitHub Actions schedule
 
-| Name | Value |
+Vercel Hobby plan caps cron at daily intervals, so we drive sync from GitHub
+Actions. The workflow at `.github/workflows/sync.yml` fires every 15 minutes
+during IST 06:00–22:00 (65 runs/day).
+
+**Public repo:** GH Actions minutes are unlimited.
+**Private repo:** ~1,950 min/month — right at the 2,000 free cap.
+
+Add two repo secrets in **Settings → Secrets and variables → Actions**:
+
+| Secret | Value |
 |---|---|
-| `DEPLOY_URL` | `https://your-app.vercel.app` (no trailing slash) |
-| `CRON_SECRET` | the same value you put in Vercel's env vars |
+| `DEPLOY_URL` | Your Vercel URL (no trailing slash) |
+| `CRON_SECRET` | Same value as in Vercel env |
 
-You can manually trigger the workflow at any time from the **Actions** tab
-→ "Hourly Asana Sync" → "Run workflow" to verify it works.
+## Pages
 
-The cron endpoint at `/api/cron/sync` is protected by `CRON_SECRET` — only
-requests bearing the matching token (i.e., your GitHub Action) succeed.
-
-## Manual reassignment
-
-On the dashboard, each active ticket has a dropdown to reassign it to a
-different target. The first reassign per browser session prompts for HTTP
-Basic Auth — leave the username blank (or any value) and enter
-`ADMIN_PASSWORD`. The browser caches it for the session.
-
-Reassignments are **sticky**: the splitter's stability rule means future
-syncs preserve the manual choice. Reassigned tickets display a small
-"manual" badge in the table. The change is also written into today's
-snapshot row so the daily Excel sheet stays consistent.
-
-## Excel structure
-
-- One file per month: `qa-allotment-2026-06.xlsx`
-- One worksheet per day inside that file, named `2026-06-26`
-- Within each sheet, rows are grouped by assignee with a highlighted
-  subheader showing the count per person.
-- The current day's worksheet is live — it reflects whatever the latest
-  sync wrote. Past days are frozen.
+| Path | What it does |
+|---|---|
+| `/` | Dashboard — team status cards + active tickets grouped by sprint |
+| `/ledger` | Live spreadsheet (all tickets active+archived, filters, auto-refresh) |
+| `/help` | User-facing reference for every concept (priority, credits, etc.) |
 
 ## Priority + sort order
 
-Priority is derived from Asana's **"Development Status"** custom field:
+QA priority comes from Asana's **"Development Status"** custom field:
 
-| Development Status value (exact)            | Priority |
-|---------------------------------------------|----------|
-| `Deployed in Staging - QA to verify`        | **P1**   |
-| `Deployed to UAT - QA to verify`            | **P2**   |
-| `Deployed in preview - QA verification`     | **P3**   |
-| anything else                               | **P4**   |
+| Dev Status string | Priority |
+|---|---|
+| `Deployed in Staging - QA to verify` | **P1** |
+| `Deployed to UAT - QA to verify` | **P2** |
+| `Deployed in preview - QA verification` | **P3** |
+| anything else | **P4** |
 
-Tickets in the dashboard and Excel are sorted by:
-1. **Sprint age** — older sprints come first, regardless of QA priority.
-   A P4 from an old sprint sits above a P1 in a newer sprint.
-   Age is determined by the order of names in `ASANA_SPRINTS`: first listed
-   is the oldest.
-2. **QA priority** (P1 → P4) — applies within a single sprint.
+Sort order (dashboard + Excel + load balancer input):
+
+1. **Sprint age** (older first, per `ASANA_SPRINTS` order). A P4 in Sprint 12 sits above a P1 in Sprint 13.
+2. **QA priority** (P1 → P4) within each sprint.
 3. Due date (nearest first), then first-seen time.
 
-## Split behavior (round-robin with stability)
+## Splitter rules
 
-- New tickets are sorted by `task_gid` and handed out in order to the 3
-  targets, starting from a cursor persisted in `rotation_state`.
-- Tickets already in the DB keep their existing `assigned_to`, so a ticket
-  doesn't shuffle between owners on every sync.
-- If a target user is removed from `ASANA_TARGET_USER_GIDS`, existing rows
-  assigned to them fall back to the first target. This is intentional — adjust
-  if you want different behavior.
+For each ticket, the splitter picks an assignee using these rules in order:
+
+1. **Manual override** wins forever (dashboard reassign sets `manual_override = true`).
+2. **Asana-account lock** — if a target has an Asana GID and matches the task's Asana assignee, lock to that target. Bypassed if that target is on leave.
+3. **Stability** — existing tickets keep their previous target. Bypassed if that target is on leave.
+4. **Load balance** — assign to the target with the most remaining capacity (`hours×60/45 − current_count`). Targets on leave are skipped. Ties break by `TARGET_USERS` order.
+
+Distribution order for new tickets: Sprint 12 P1 → Sprint 12 P2 → Sprint 12 P3 → Sprint 12 P4 → Sprint 13 P1 → … so the most-urgent work is spread first.
+
+## Status & capacity
+
+Each target has a row in `target_status`:
+
+| Status | Hours (default) | Capacity (at 45 min/ticket) |
+|---|---|---|
+| `available` | 8 | 10 |
+| `regression` | 0–8 (you set it) | hours × 4/3 |
+| `leave` | 0 | 0 (gets no tickets) |
+
+Edit via the dashboard's **Edit** button on each team card (Basic Auth).
+
+## Credit ledger
+
+**Completions = +1 credit**
+- Recorded when a ticket's QA priority changes away from P1/P2/P3 between syncs.
+- Each phase counts separately: Preview → UAT → Staging = 3 credits.
+- Fires any day of the week, including weekends.
+- Credited to the assignee at the moment of transition.
+
+**Penalties = −1 credit**
+- Fires when sync runs at IST ≥ 22 on a **weekday**.
+- One penalty per active **P1** ticket per day, credited to the current assignee.
+- `unique (task_gid, penalized_date)` prevents double-counting.
+- Weekends (Sat/Sun IST) are excluded.
+- P2 and P3 never trigger penalties.
+
+Dashboard team cards show **Today / Month / Total** as net credit (color-coded) with `+plus −minus` breakdown.
+
+## Manual reassignment
+
+Dropdown next to each ticket on the dashboard. First reassign in a session
+prompts for HTTP Basic Auth:
+
+- **Username**: any value (or blank)
+- **Password**: `ADMIN_PASSWORD`
+
+Reassigned tickets get a `manual` badge and stay sticky across future syncs.
+
+## Excel download
+
+`⤓ Download xlsx` returns a single sheet (`qa-allotment-YYYY-MM-DD.xlsx`) with every ticket ever seen:
+
+- Header has Excel's built-in filter buttons (sortable / searchable)
+- Sorted: active first (sprint → priority), then archived (greyed out)
+- Columns: Priority, Status, Assigned, Task ID, Task Name, Dev Status, Sprint, Original Assignee, Due, First/Last seen, Manual flag, Asana link
+
+## Archived
+
+A ticket becomes **archived** when it leaves the source-user + sprint filter:
+
+- Reassigned in Asana to someone outside `ASANA_SOURCE_USER_GIDS`
+- Moved to a sprint not in `ASANA_SPRINTS`
+- Marked completed in Asana
+- Deleted from Asana
+
+Archived = "can't be tested right now." Rows are **never deleted** — they're kept in `tickets` (and historical `daily_snapshots`) forever. Visible in `/ledger` and the Excel download, hidden from the dashboard.
 
 ## Files
 
-| Path                              | Purpose                                  |
-|-----------------------------------|------------------------------------------|
-| `lib/asana.ts`                    | Asana REST client                        |
-| `lib/db.ts`                       | Supabase client + ticket row type        |
-| `lib/splitter.ts`                 | Round-robin with stability               |
-| `lib/excel.ts`                    | Workbook builder                         |
-| `lib/sync.ts`                     | Orchestration: fetch → split → upsert    |
-| `lib/config.ts`                   | Env parsing                              |
-| `app/api/cron/sync/route.ts`      | Cron entrypoint (called by GH Actions)   |
-| `app/api/admin/reassign/route.ts` | Manual override endpoint (Basic Auth)    |
-| `middleware.ts`                   | Basic Auth gate for `/api/admin/*`       |
-| `lib/ist.ts`                      | IST date / month helpers                 |
-| `.github/workflows/sync.yml`      | Hourly GitHub Actions schedule           |
-| `app/api/download/route.ts`       | xlsx download                            |
-| `app/api/tickets/route.ts`        | JSON for the dashboard                   |
-| `app/page.tsx`                    | Dashboard UI                             |
-| `supabase/schema.sql`             | DB schema                                |
-| `vercel.json`                     | Vercel build config (no cron — see workflow) |
-| `scripts/run-sync.ts`             | CLI: `npm run sync:local`                |
+| Path | Purpose |
+|---|---|
+| `lib/asana.ts` | Asana REST client (read-only) |
+| `lib/config.ts` | Env parsing (workspace, sprints, targets) |
+| `lib/db.ts` | Supabase client + row types |
+| `lib/ist.ts` | IST date/hour/weekend helpers |
+| `lib/priority.ts` | Dev-status → P1/P2/P3/P4 |
+| `lib/splitter.ts` | 4-tier assignment + capacity-aware load balance |
+| `lib/target-status.ts` | Status/hours/capacity helpers |
+| `lib/sync.ts` | Orchestrator: fetch → split → upsert → completions → penalties |
+| `lib/excel.ts` | xlsx builder |
+| `app/page.tsx` | Dashboard UI |
+| `app/ledger/page.tsx` | Live spreadsheet UI |
+| `app/help/page.tsx` | In-app documentation |
+| `app/api/cron/sync/route.ts` | Cron entrypoint (GH Actions hits this) |
+| `app/api/tickets/route.ts` | JSON for dashboard + ledger |
+| `app/api/qa/[name]/route.ts` | Per-person ticket history |
+| `app/api/admin/reassign/route.ts` | Manual override |
+| `app/api/admin/target-status/route.ts` | Status edit |
+| `app/api/download/route.ts` | xlsx download |
+| `middleware.ts` | Basic Auth gate for `/api/admin/*` |
+| `supabase/schema.sql` | DB schema (tickets, daily_snapshots, completions, penalties, target_status, sync_runs, rotation_state) |
+| `.github/workflows/sync.yml` | 15-min cron schedule |
+| `scripts/run-sync.ts` | CLI: `npm run sync:local` |
+| `vercel.json` | Vercel build config (cron is GH Actions, not Vercel) |
+
+## Common operations
+
+**Reset all data and start fresh:**
+```sql
+delete from penalties;
+delete from completions;
+delete from daily_snapshots;
+delete from tickets;
+update rotation_state set next_index = 0;
+delete from target_status;  -- optional, removes status overrides
+```
+
+**Manually trigger a sync without waiting for cron:**
+- Production: `curl -H "Authorization: Bearer $CRON_SECRET" "$DEPLOY_URL/api/cron/sync"`
+- Local: `npm run sync:local`
+- Or in GitHub: **Actions → Hourly Asana Sync → Run workflow**
+
+**Find a sprint's project GID:** open the sprint in Asana, copy the URL — `app.asana.com/0/<PROJECT_GID>/list/...`. The app discovers projects by name prefix though, so you usually don't need the GID directly.
+
+**See what Asana custom fields look like:**
+```bash
+curl -H "Authorization: Bearer $ASANA_TOKEN" \
+  "https://app.asana.com/api/1.0/tasks?project=<PROJECT_GID>&limit=1&opt_fields=custom_fields.name,custom_fields.display_value"
+```

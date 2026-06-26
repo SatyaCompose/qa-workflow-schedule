@@ -74,9 +74,23 @@ export default function HelpPage() {
       <Card title="Completed = +1 credit">
         <p>
           A <b>completion</b> is recorded when a ticket leaves a QA-verify state — meaning the assignee
-          finished testing and the ticket moved on (sent back to dev for review or deployed forward).
+          finished testing and the ticket moved on (sent back to dev for review, deployed forward,
+          or removed from scope entirely).
         </p>
-        <p>Specifically: the ticket's priority changes <i>away from</i> P1, P2, or P3 between syncs.</p>
+        <p>Two ways a credit fires:</p>
+        <ol>
+          <li>
+            <b>Priority transition</b> — the ticket's QA priority changes away from P1, P2, or P3
+            (e.g. <i>"Deployed in Staging - QA to verify"</i> → <i>"Ready for PROD Deployment"</i>).
+            The transition is detected on the next sync.
+          </li>
+          <li>
+            <b>Archived while in QA-verify state</b> — if a ticket was P1/P2/P3 and disappears from
+            our scope (reassigned in Asana to someone outside the source users, moved to a sprint
+            we don't track, marked completed in Asana), the assignee gets credit too. The reasoning:
+            the ticket only left scope because QA finished with it and someone took the next step.
+          </li>
+        </ol>
         <p>
           Each QA phase the ticket passes through counts separately. Preview → UAT → Staging on the
           same ticket in one day = <b>3 credits</b>.
