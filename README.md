@@ -3,9 +3,10 @@
 Reads tasks from **specific sprint sections** in an Asana project that are
 assigned to **2 source users**, splits them across **3 target users**
 (round-robin with stability), persists every ticket ever seen in Supabase,
-and exposes a website + downloadable Excel sheet. A GitHub Actions workflow re-runs
-the sync every hour between **6:00 AM and 10:00 PM IST** by hitting the
-Vercel endpoint. **Asana is never written to** — this app only reads.
+and exposes a website + downloadable monthly Excel files (one tab per day).
+A GitHub Actions workflow re-runs the sync every hour between
+**6:00 AM and 10:00 PM IST**. The dashboard also lets an admin **manually
+reassign** a ticket. **Asana is never written to** — this app only reads.
 
 ## How it works
 
@@ -22,8 +23,14 @@ GH Actions (hourly) ──▶ /api/cron/sync ──▶ runSync()
                                               └─ archive rows no longer in Asana
                                                  (kept in DB, flagged archived)
 
-Browser ──▶ /              dashboard (active + archived counts)
-        ──▶ /api/download  generates xlsx from current DB state
+Each sync also rewrites today's row in `daily_snapshots` (a frozen daily
+history table). Past days never change.
+
+Browser ──▶ /                          dashboard (counts + reassign UI)
+        ──▶ /api/download?month=YYYY-MM xlsx for that IST month
+                                       (one worksheet per day, grouped
+                                        by assignee within each sheet)
+        ──▶ POST /api/admin/reassign   manual override (Basic Auth)
 ```
 
 Archived rows are **never deleted** — they keep `first_seen` / `last_seen` and
@@ -64,13 +71,17 @@ curl -H "Authorization: Bearer $ASANA_TOKEN" \
 
 Set in `.env`:
 ```
-ASANA_SPRINT_GIDS=<section_gid_1>,<section_gid_2>
+ASANA_PROJECT_GID=<project_gid>
 ASANA_SOURCE_USER_GIDS=<gid1>,<gid2>
-ASANA_TARGET_USER_GIDS=<gid3>,<gid4>,<gid5>
+ASANA_SPRINTS=Sprint 13                # comma-separated sprint names
+                                       # (matches the "Sprint Allocation" custom field)
+TARGET_USERS=Person 1,Person 2,Person 3  # names only — target users do not
+                                         # need Asana accounts; they live only in this app
 ```
 
-To track an additional sprint later, just append its section GID to
-`ASANA_SPRINT_GIDS`.
+To track an additional sprint later, append its name to `ASANA_SPRINTS`.
+**Order matters** — the first sprint name is treated as the oldest (and
+therefore highest priority within the same QA priority band).
 
 ### 3. Install + run locally
 ```bash
@@ -105,6 +116,46 @@ You can manually trigger the workflow at any time from the **Actions** tab
 The cron endpoint at `/api/cron/sync` is protected by `CRON_SECRET` — only
 requests bearing the matching token (i.e., your GitHub Action) succeed.
 
+## Manual reassignment
+
+On the dashboard, each active ticket has a dropdown to reassign it to a
+different target. The first reassign per browser session prompts for HTTP
+Basic Auth — leave the username blank (or any value) and enter
+`ADMIN_PASSWORD`. The browser caches it for the session.
+
+Reassignments are **sticky**: the splitter's stability rule means future
+syncs preserve the manual choice. Reassigned tickets display a small
+"manual" badge in the table. The change is also written into today's
+snapshot row so the daily Excel sheet stays consistent.
+
+## Excel structure
+
+- One file per month: `qa-allotment-2026-06.xlsx`
+- One worksheet per day inside that file, named `2026-06-26`
+- Within each sheet, rows are grouped by assignee with a highlighted
+  subheader showing the count per person.
+- The current day's worksheet is live — it reflects whatever the latest
+  sync wrote. Past days are frozen.
+
+## Priority + sort order
+
+Priority is derived from Asana's **"Development Status"** custom field:
+
+| Development Status value (exact)            | Priority |
+|---------------------------------------------|----------|
+| `Deployed in Staging - QA to verify`        | **P1**   |
+| `Deployed to UAT - QA to verify`            | **P2**   |
+| `Deployed in preview - QA verification`     | **P3**   |
+| anything else                               | **P4**   |
+
+Tickets in the dashboard and Excel are sorted by:
+1. **Sprint age** — older sprints come first, regardless of QA priority.
+   A P4 from an old sprint sits above a P1 in a newer sprint.
+   Age is determined by the order of names in `ASANA_SPRINTS`: first listed
+   is the oldest.
+2. **QA priority** (P1 → P4) — applies within a single sprint.
+3. Due date (nearest first), then first-seen time.
+
 ## Split behavior (round-robin with stability)
 
 - New tickets are sorted by `task_gid` and handed out in order to the 3
@@ -126,6 +177,9 @@ requests bearing the matching token (i.e., your GitHub Action) succeed.
 | `lib/sync.ts`                     | Orchestration: fetch → split → upsert    |
 | `lib/config.ts`                   | Env parsing                              |
 | `app/api/cron/sync/route.ts`      | Cron entrypoint (called by GH Actions)   |
+| `app/api/admin/reassign/route.ts` | Manual override endpoint (Basic Auth)    |
+| `middleware.ts`                   | Basic Auth gate for `/api/admin/*`       |
+| `lib/ist.ts`                      | IST date / month helpers                 |
 | `.github/workflows/sync.yml`      | Hourly GitHub Actions schedule           |
 | `app/api/download/route.ts`       | xlsx download                            |
 | `app/api/tickets/route.ts`        | JSON for the dashboard                   |
