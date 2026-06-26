@@ -3,13 +3,14 @@
 Reads tasks from **specific sprint sections** in an Asana project that are
 assigned to **2 source users**, splits them across **3 target users**
 (round-robin with stability), persists every ticket ever seen in Supabase,
-and exposes a website + downloadable Excel sheet. A Vercel Cron job re-runs
-the sync every hour. **Asana is never written to** — this app only reads.
+and exposes a website + downloadable Excel sheet. A GitHub Actions workflow re-runs
+the sync every hour between **6:00 AM and 10:00 PM IST** by hitting the
+Vercel endpoint. **Asana is never written to** — this app only reads.
 
 ## How it works
 
 ```
-Vercel Cron (hourly) ──▶ /api/cron/sync ──▶ runSync()
+GH Actions (hourly) ──▶ /api/cron/sync ──▶ runSync()
                                               │
                                               ├─ Asana API (read-only): for each
                                               │  sprint section GID, fetch incomplete
@@ -79,15 +80,30 @@ npm run dev             # http://localhost:3000
 ```
 
 ### 4. Deploy to Vercel
-```bash
-npx vercel
-# In the Vercel dashboard, add every var from .env.example as env vars.
-# Generate a random string for CRON_SECRET.
-# Vercel will read vercel.json and register the hourly cron automatically.
-```
+Import the GitHub repo at https://vercel.com/new, then in **Project Settings
+→ Environment Variables** add every var from `.env.example` for the
+**Production** environment. Generate a random string for `CRON_SECRET`
+(e.g., `openssl rand -hex 32`).
+
+### 5. Configure GitHub Actions (hourly trigger)
+Vercel Hobby plan only allows daily cron jobs, so we trigger the sync from
+GitHub Actions instead. The workflow lives at `.github/workflows/sync.yml`
+and runs hourly between 06:00 and 22:00 IST (17 runs/day). The schedule
+in the workflow file is in UTC (`30 0-16 * * *`).
+
+In the GitHub repo, **Settings → Secrets and variables → Actions → New
+repository secret**, add:
+
+| Name | Value |
+|---|---|
+| `DEPLOY_URL` | `https://your-app.vercel.app` (no trailing slash) |
+| `CRON_SECRET` | the same value you put in Vercel's env vars |
+
+You can manually trigger the workflow at any time from the **Actions** tab
+→ "Hourly Asana Sync" → "Run workflow" to verify it works.
 
 The cron endpoint at `/api/cron/sync` is protected by `CRON_SECRET` — only
-Vercel Cron can hit it in production.
+requests bearing the matching token (i.e., your GitHub Action) succeed.
 
 ## Split behavior (round-robin with stability)
 
@@ -109,10 +125,11 @@ Vercel Cron can hit it in production.
 | `lib/excel.ts`                    | Workbook builder                         |
 | `lib/sync.ts`                     | Orchestration: fetch → split → upsert    |
 | `lib/config.ts`                   | Env parsing                              |
-| `app/api/cron/sync/route.ts`      | Hourly cron entrypoint                   |
+| `app/api/cron/sync/route.ts`      | Cron entrypoint (called by GH Actions)   |
+| `.github/workflows/sync.yml`      | Hourly GitHub Actions schedule           |
 | `app/api/download/route.ts`       | xlsx download                            |
 | `app/api/tickets/route.ts`        | JSON for the dashboard                   |
 | `app/page.tsx`                    | Dashboard UI                             |
 | `supabase/schema.sql`             | DB schema                                |
-| `vercel.json`                     | Cron schedule (`0 * * * *`)              |
+| `vercel.json`                     | Vercel build config (no cron — see workflow) |
 | `scripts/run-sync.ts`             | CLI: `npm run sync:local`                |

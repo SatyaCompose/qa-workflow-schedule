@@ -1,0 +1,48 @@
+name: Hourly Asana Sync
+
+on:
+  schedule:
+    # Hourly between 6:00 AM and 10:00 PM IST. IST = UTC+5:30, so in UTC that's
+    # 00:30 through 16:30, at minute 30. 17 runs/day. India doesn't observe DST.
+    - cron: "30 0-16 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger /api/cron/sync on Vercel
+        env:
+          DEPLOY_URL: ${{ secrets.DEPLOY_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DEPLOY_URL:-}" ]; then
+            echo "::error::DEPLOY_URL secret is not set"
+            exit 1
+          fi
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::CRON_SECRET secret is not set"
+            exit 1
+          fi
+
+          response_file=$(mktemp)
+          status=$(curl -sS -o "$response_file" -w "%{http_code}" \
+            --max-time 90 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${DEPLOY_URL%/}/api/cron/sync")
+
+          echo "HTTP $status"
+          echo "Response body:"
+          cat "$response_file"
+          echo
+
+          if [ "$status" != "200" ]; then
+            echo "::error::Sync endpoint returned HTTP $status"
+            exit 1
+          fi
