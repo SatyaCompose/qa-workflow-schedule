@@ -1,8 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-
-// lastMonths removed — month picker no longer used on the home page.
+import { Fragment, useEffect, useMemo, useState } from "react";
 
 type Priority = "P1" | "P2" | "P3" | "P4" | null;
 
@@ -125,7 +123,7 @@ export default function Page() {
 
 function Header({ lastRun }: { lastRun: Run | null }) {
   return (
-    <header style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16, flexWrap: "wrap", marginBottom: 24 }}>
+    <header className="dashboard-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16, flexWrap: "wrap", marginBottom: 24 }}>
       <div>
         <h1 style={{ margin: 0, fontSize: 28, fontWeight: 700, letterSpacing: "-0.02em" }}>
           QA Work Allotment
@@ -361,6 +359,18 @@ function Table({
 }) {
   if (loading) return <p className="muted">Loading…</p>;
   if (rows.length === 0) return <p className="muted">No tickets.</p>;
+
+  // Group rows by sprint while preserving sort order. A sprint header row
+  // separates each group visually.
+  const groups: { sprint: string; rows: Ticket[] }[] = [];
+  for (const t of rows) {
+    const sprintLabel = t.sprint ?? "No sprint";
+    const last = groups[groups.length - 1];
+    if (last && last.sprint === sprintLabel) last.rows.push(t);
+    else groups.push({ sprint: sprintLabel, rows: [t] });
+  }
+  const colSpan = canReassign ? 8 : 7;
+
   return (
     <div className="table-wrap">
       <div style={{ overflowX: "auto" }}>
@@ -378,8 +388,17 @@ function Table({
             </tr>
           </thead>
           <tbody>
-            {rows.map((t) => (
-              <Row key={t.task_gid} t={t} targets={targets} canReassign={canReassign} onReassigned={onReassigned} />
+            {groups.map((g) => (
+              <Fragment key={g.sprint}>
+                <tr className="sprint-group">
+                  <td colSpan={colSpan}>
+                    {g.sprint}<span className="count">({g.rows.length})</span>
+                  </td>
+                </tr>
+                {g.rows.map((t) => (
+                  <Row key={t.task_gid} t={t} targets={targets} canReassign={canReassign} onReassigned={onReassigned} />
+                ))}
+              </Fragment>
             ))}
           </tbody>
         </table>

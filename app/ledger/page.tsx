@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 
 type Priority = "P1" | "P2" | "P3" | "P4" | null;
 
@@ -20,6 +20,19 @@ type Ticket = {
   priority: Priority;
   dev_status: string | null;
   sprint: string | null;
+};
+
+type TeamMember = {
+  name: string;
+  gid: string;
+  status: "available" | "regression" | "leave";
+  hours: number;
+  notes: string | null;
+  capacity: number;
+  active: number;
+  completedToday: number;
+  completedMonth: number;
+  completedTotal: number;
 };
 
 const PRIORITY_RANK: Record<string, number> = { P1: 1, P2: 2, P3: 3, P4: 4 };
@@ -43,6 +56,7 @@ function cmp(a: Ticket, b: Ticket, sprintOrder: string[]): number {
 
 export default function LedgerPage() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [team, setTeam] = useState<TeamMember[]>([]);
   const [sprintOrder, setSprintOrder] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastFetched, setLastFetched] = useState<Date | null>(null);
@@ -56,6 +70,7 @@ export default function LedgerPage() {
     const r = await fetch("/api/tickets");
     const d = await r.json();
     setTickets(d.tickets ?? []);
+    setTeam(d.teamStatus ?? []);
     setSprintOrder(d.sprints ?? []);
     setLastFetched(new Date());
   };
@@ -63,11 +78,27 @@ export default function LedgerPage() {
   useEffect(() => {
     setLoading(true);
     refresh().finally(() => setLoading(false));
-    // Live: refresh every 60 seconds so the page stays current.
     const t = setInterval(refresh, 60_000);
     return () => clearInterval(t);
   }, []);
 
+  // ─── Top-level counts ──────────────────────────────────────────────────
+  const active = useMemo(() => tickets.filter((t) => !t.archived), [tickets]);
+  const archived = useMemo(() => tickets.filter((t) => t.archived), [tickets]);
+  const byPriority = useMemo(() => {
+    const m: Record<string, number> = { P1: 0, P2: 0, P3: 0, P4: 0 };
+    for (const t of active) {
+      const p = t.priority ?? "P4";
+      m[p] = (m[p] ?? 0) + 1;
+    }
+    return m;
+  }, [active]);
+
+  const totalCompletedMonth = team.reduce((s, m) => s + m.completedMonth, 0);
+  const totalCompletedToday = team.reduce((s, m) => s + m.completedToday, 0);
+  const totalCompletedAll = team.reduce((s, m) => s + m.completedTotal, 0);
+
+  // ─── Filtered detail table ─────────────────────────────────────────────
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return tickets
@@ -94,12 +125,11 @@ export default function LedgerPage() {
 
   return (
     <main style={{ maxWidth: 1400, margin: "0 auto", padding: "32px 24px 64px" }}>
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
+      <header className="ledger-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16, flexWrap: "wrap", marginBottom: 20 }}>
         <div>
           <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, letterSpacing: "-0.02em" }}>Live ticket sheet</h1>
           <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--text-3)" }}>
-            {filtered.length} of {tickets.length} tickets · auto-refresh every 60s ·{" "}
-            {lastFetched ? `updated ${lastFetched.toLocaleTimeString()}` : "loading…"}
+            Auto-refreshes every 60s · {lastFetched ? `updated ${lastFetched.toLocaleTimeString()}` : "loading…"}
           </p>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -108,6 +138,29 @@ export default function LedgerPage() {
           <a href="/api/download" className="btn btn-primary">⤓ Download xlsx</a>
         </div>
       </header>
+
+      {/* ─── Overview tiles ───────────────────────────────────────────── */}
+      <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 16 }}>
+        <Tile label="Pending (active)" value={active.length} accent="#1d4ed8" />
+        <Tile label="P1" value={byPriority.P1} accent="#b91c1c" />
+        <Tile label="P2" value={byPriority.P2} accent="#a16207" />
+        <Tile label="P3" value={byPriority.P3} accent="#1e40af" />
+        <Tile label="P4" value={byPriority.P4} accent="#374151" />
+        <Tile label="Archived (history)" value={archived.length} accent="#6b7280" />
+      </section>
+
+      <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 28 }}>
+        <Tile label="Completed today" value={totalCompletedToday} accent="#15803d" />
+        <Tile label="Completed this month" value={totalCompletedMonth} accent="#0e7490" />
+        <Tile label="Completed all-time" value={totalCompletedAll} accent="#1f2937" />
+      </section>
+
+      {/* ─── QA performance ───────────────────────────────────────────── */}
+      <h2 className="section-title" style={{ margin: "0 0 12px" }}>QA performance</h2>
+      <QAPerformanceTable team={team} tickets={active} />
+
+      {/* ─── Filters + detail table ───────────────────────────────────── */}
+      <h2 className="section-title" style={{ margin: "28px 0 12px" }}>All tickets ({filtered.length} shown)</h2>
 
       <div className="card" style={{ padding: 12, marginBottom: 16, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <input
@@ -141,24 +194,127 @@ export default function LedgerPage() {
       ) : filtered.length === 0 ? (
         <p className="muted">No tickets match the current filters.</p>
       ) : (
-        <div className="table-wrap">
-          <div style={{ overflowX: "auto", maxHeight: "calc(100vh - 260px)" }}>
-            <table className="qa">
-              <thead>
-                <tr>
-                  <th style={{ width: 56 }}>Pri</th>
-                  <th style={{ width: 90 }}>Status</th>
-                  <th style={{ width: 120 }}>Assigned</th>
-                  <th>Task</th>
-                  <th style={{ width: 220 }}>Dev Status</th>
-                  <th style={{ width: 100 }}>Sprint</th>
-                  <th style={{ width: 120 }}>Original</th>
-                  <th style={{ width: 100 }}>Due</th>
-                  <th style={{ width: 100 }}>First seen</th>
+        <DetailTable rows={filtered} />
+      )}
+    </main>
+  );
+}
+
+function Tile({ label, value, accent }: { label: string; value: number; accent: string }) {
+  return (
+    <div className="card" style={{ padding: 14, borderLeft: `4px solid ${accent}` }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</div>
+      <div style={{ fontSize: 28, fontWeight: 700, lineHeight: 1.1, marginTop: 4 }}>{value}</div>
+    </div>
+  );
+}
+
+function QAPerformanceTable({ team, tickets }: { team: TeamMember[]; tickets: Ticket[] }) {
+  // Per-person breakdown of currently active tickets by priority
+  const byPerson: Record<string, Record<string, number>> = {};
+  for (const m of team) byPerson[m.name] = { P1: 0, P2: 0, P3: 0, P4: 0 };
+  for (const t of tickets) {
+    const p = t.priority ?? "P4";
+    if (!byPerson[t.assigned_to]) byPerson[t.assigned_to] = { P1: 0, P2: 0, P3: 0, P4: 0 };
+    byPerson[t.assigned_to][p] = (byPerson[t.assigned_to][p] ?? 0) + 1;
+  }
+
+  if (team.length === 0) return <p className="muted">No team configured.</p>;
+
+  return (
+    <div className="table-wrap">
+      <div style={{ overflowX: "auto" }}>
+        <table className="qa">
+          <thead>
+            <tr>
+              <th>Person</th>
+              <th style={{ width: 90 }}>Status</th>
+              <th style={{ width: 90 }}>Capacity</th>
+              <th style={{ width: 80 }}>Pending</th>
+              <th style={{ width: 60 }}>P1</th>
+              <th style={{ width: 60 }}>P2</th>
+              <th style={{ width: 60 }}>P3</th>
+              <th style={{ width: 60 }}>P4</th>
+              <th style={{ width: 100 }}>✓ Today</th>
+              <th style={{ width: 110 }}>✓ Month</th>
+              <th style={{ width: 110 }}>✓ Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {team.map((m) => {
+              const bp = byPerson[m.name] ?? { P1: 0, P2: 0, P3: 0, P4: 0 };
+              const usePct = m.capacity > 0 ? Math.min(100, Math.round((m.active / m.capacity) * 100)) : 0;
+              const barClass = usePct >= 100 ? "bar-danger" : usePct >= 80 ? "bar-warn" : "bar-ok";
+              const sBg = m.status === "leave" ? "#fee2e2" : m.status === "regression" ? "#fef3c7" : "#dcfce7";
+              const sFg = m.status === "leave" ? "#991b1b" : m.status === "regression" ? "#854d0e" : "#166534";
+              return (
+                <tr key={m.name}>
+                  <td style={{ fontWeight: 600 }}>{m.name}</td>
+                  <td>
+                    <span style={{ background: sBg, color: sFg, padding: "2px 8px", borderRadius: 999, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                      {m.status}
+                    </span>
+                  </td>
+                  <td>
+                    <div style={{ fontSize: 13 }}>{m.active} / {m.capacity}</div>
+                    <div className="bar" style={{ marginTop: 4 }}>
+                      <span className={barClass} style={{ width: `${usePct}%` }} />
+                    </div>
+                  </td>
+                  <td style={{ fontWeight: 700 }}>{m.active}</td>
+                  <td>{bp.P1 > 0 ? <span className="badge badge-p1">{bp.P1}</span> : <span className="muted">—</span>}</td>
+                  <td>{bp.P2 > 0 ? <span className="badge badge-p2">{bp.P2}</span> : <span className="muted">—</span>}</td>
+                  <td>{bp.P3 > 0 ? <span className="badge badge-p3">{bp.P3}</span> : <span className="muted">—</span>}</td>
+                  <td>{bp.P4 > 0 ? <span className="badge badge-p4">{bp.P4}</span> : <span className="muted">—</span>}</td>
+                  <td style={{ fontWeight: 600, color: "#15803d" }}>{m.completedToday}</td>
+                  <td style={{ fontWeight: 600 }}>{m.completedMonth}</td>
+                  <td style={{ fontWeight: 600, color: "var(--text-2)" }}>{m.completedTotal}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {filtered.map((t) => {
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function DetailTable({ rows }: { rows: Ticket[] }) {
+  // Group rows by sprint, preserving input order.
+  const groups: { sprint: string; rows: Ticket[] }[] = [];
+  for (const t of rows) {
+    const sprintLabel = t.archived ? "Archived" : (t.sprint ?? "No sprint");
+    const last = groups[groups.length - 1];
+    if (last && last.sprint === sprintLabel) last.rows.push(t);
+    else groups.push({ sprint: sprintLabel, rows: [t] });
+  }
+
+  return (
+    <div className="table-wrap">
+      <div style={{ overflowX: "auto", maxHeight: "calc(100vh - 260px)" }}>
+        <table className="qa">
+          <thead>
+            <tr>
+              <th style={{ width: 56 }}>Pri</th>
+              <th style={{ width: 90 }}>Status</th>
+              <th style={{ width: 120 }}>Assigned</th>
+              <th>Task</th>
+              <th style={{ width: 220 }}>Dev Status</th>
+              <th style={{ width: 100 }}>Sprint</th>
+              <th style={{ width: 120 }}>Original</th>
+              <th style={{ width: 100 }}>Due</th>
+              <th style={{ width: 100 }}>First seen</th>
+            </tr>
+          </thead>
+          <tbody>
+            {groups.map((g) => (
+              <Fragment key={g.sprint}>
+                <tr className="sprint-group">
+                  <td colSpan={9}>
+                    {g.sprint}<span className="count">({g.rows.length})</span>
+                  </td>
+                </tr>
+                {g.rows.map((t) => {
                   const p = t.priority ?? "P4";
                   return (
                     <tr key={t.task_gid} style={{ opacity: t.archived ? 0.55 : 1 }}>
@@ -196,11 +352,11 @@ export default function LedgerPage() {
                     </tr>
                   );
                 })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-    </main>
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }

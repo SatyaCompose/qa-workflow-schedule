@@ -55,6 +55,28 @@ export async function runSync(): Promise<SyncResult> {
       }
     }
 
+    // Order tasks for assignment:
+    //   primary:  sprint age (older sprint first per ASANA_SPRINTS order)
+    //   secondary: QA priority (P1 before P2 before P3 before P4)
+    //   tertiary:  task gid (deterministic tiebreak)
+    // The splitter's load balancer assigns in this order, so P1s of the
+    // oldest sprint are distributed across the team FIRST, then P2s, etc.
+    const PRIORITY_RANK: Record<string, number> = { P1: 1, P2: 2, P3: 3, P4: 4 };
+    const sprintRank = (s: string | null) => {
+      if (!s) return sprintPrefixes.length + 1;
+      const i = sprintPrefixes.findIndex((p) => p.toLowerCase() === s.toLowerCase());
+      return i === -1 ? sprintPrefixes.length : i;
+    };
+    tagged.sort((a, b) => {
+      const sa = sprintRank(a.sprintLabel);
+      const sb = sprintRank(b.sprintLabel);
+      if (sa !== sb) return sa - sb;
+      const pa = PRIORITY_RANK[computePriority(a.task)] ?? 5;
+      const pb = PRIORITY_RANK[computePriority(b.task)] ?? 5;
+      if (pa !== pb) return pa - pb;
+      return a.task.gid.localeCompare(b.task.gid);
+    });
+
     const tasks = tagged.map((tg) => tg.task);
     const sprintByGid = new Map(tagged.map((tg) => [tg.task.gid, tg.sprintLabel]));
 

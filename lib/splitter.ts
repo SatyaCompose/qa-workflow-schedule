@@ -95,7 +95,9 @@ export async function splitWithStability(
   }
 
   // Pass 2: load-balance the remaining new (or leave-orphaned) tickets.
-  newTasks.sort((a, b) => a.gid.localeCompare(b.gid));
+  // The caller is responsible for input order; sync.ts sorts by
+  // sprint→priority→gid so P1s of the oldest sprint distribute across the
+  // team first.
   for (const task of newTasks) {
     const target = pickByRemainingCapacity(targets, counts, capByName, isOnLeave);
     counts.set(target.gid, (counts.get(target.gid) ?? 0) + 1);
