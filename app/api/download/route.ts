@@ -46,7 +46,7 @@ export async function GET(req: NextRequest) {
 
   let sprintOrder: string[] = [];
   try {
-    sprintOrder = config().sprints;
+    sprintOrder = config().sprintPrefixes;
   } catch {
     /* fall through with empty sprint order */
   }

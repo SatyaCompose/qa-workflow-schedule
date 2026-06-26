@@ -1,8 +1,13 @@
-import { fetchProjectTasks } from "./asana";
+import {
+  fetchProjectTasks,
+  fetchWorkspaceProjects,
+  resolveSprintProjects,
+  AsanaTask,
+} from "./asana";
 import { config } from "./config";
 import { supabase } from "./db";
 import { istDateString } from "./ist";
-import { computePriority, devStatusOf, isInSprints, sprintOf } from "./priority";
+import { computePriority, devStatusOf } from "./priority";
 import { splitWithStability } from "./splitter";
 
 export type SyncResult = {
@@ -23,18 +28,37 @@ export async function runSync(): Promise<SyncResult> {
   const runId = runRow?.id;
 
   try {
-    const { projectGid, source, sprints, targets } = config();
+    const { workspaceGid, source, sprintPrefixes, targets } = config();
 
-    const allTasks = await fetchProjectTasks(projectGid);
+    // Discover sprint projects by name prefix.
+    const allProjects = await fetchWorkspaceProjects(workspaceGid);
+    const resolved = resolveSprintProjects(sprintPrefixes, allProjects);
 
-    // Keep tasks that:
-    //   1. Belong to one of the configured sprints (via "Sprint Allocation" custom field), and
-    //   2. Are assigned to one of the source users.
-    const tasks = allTasks.filter((t) => {
-      if (!t.assignee || !source.includes(t.assignee.gid)) return false;
-      if (!isInSprints(t, sprints)) return false;
-      return true;
-    });
+    if (resolved.length === 0) {
+      throw new Error(
+        `No Asana projects matched ASANA_SPRINTS=[${sprintPrefixes.join(", ")}]. ` +
+          `Checked ${allProjects.length} workspace project(s).`,
+      );
+    }
+
+    // For each sprint project, fetch its tasks. Tag each task with the
+    // matched prefix so we have a consistent sprint label even when project
+    // names differ in their suffix.
+    type Tagged = { task: AsanaTask; sprintLabel: string };
+    const tagged: Tagged[] = [];
+    const seenGid = new Set<string>();
+    for (const { prefix, project } of resolved) {
+      const tasks = await fetchProjectTasks(project.gid);
+      for (const t of tasks) {
+        if (!t.assignee || !source.includes(t.assignee.gid)) continue;
+        if (seenGid.has(t.gid)) continue; // a task could live in multiple sprint projects
+        seenGid.add(t.gid);
+        tagged.push({ task: t, sprintLabel: prefix });
+      }
+    }
+
+    const tasks = tagged.map((tg) => tg.task);
+    const sprintByGid = new Map(tagged.map((tg) => [tg.task.gid, tg.sprintLabel]));
 
     const assignments = await splitWithStability(tasks, targets);
 
@@ -42,7 +66,7 @@ export async function runSync(): Promise<SyncResult> {
     const upserts = assignments.map((a) => {
       const priority = computePriority(a.task);
       const dev_status = devStatusOf(a.task);
-      const sprint = sprintOf(a.task);
+      const sprint = sprintByGid.get(a.task.gid) ?? null;
       return {
         task_gid: a.task.gid,
         task_name: a.task.name,
@@ -96,8 +120,7 @@ export async function runSync(): Promise<SyncResult> {
       archivedCount = count ?? 0;
     }
 
-    // Rewrite today's snapshot to reflect the current state. Past days
-    // remain untouched and serve as frozen history.
+    // Rewrite today's snapshot.
     const today = istDateString();
     {
       const { error } = await db

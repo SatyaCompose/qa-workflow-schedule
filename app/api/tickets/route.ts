@@ -13,7 +13,7 @@ export async function GET() {
   let configuredTargets: { gid: string; name: string }[] = [];
   try {
     const c = config();
-    sprintOrder = c.sprints;
+    sprintOrder = c.sprintPrefixes;
     configuredTargets = c.targets;
   } catch {
     /* missing env vars — return derived targets below */

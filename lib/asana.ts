@@ -34,7 +34,9 @@ export type AsanaTask = {
   memberships: { project?: { gid: string; name: string }; section?: { gid: string; name: string } }[];
 };
 
-const FIELDS = [
+export type AsanaProject = { gid: string; name: string };
+
+const TASK_FIELDS = [
   "gid",
   "name",
   "permalink_url",
@@ -82,26 +84,66 @@ async function asanaFetch(path: string): Promise<any> {
   return res.json();
 }
 
-// Fetch all incomplete tasks in the given project. Caller filters by
-// sprint custom field + assignee. We do the filter client-side because
-// Asana's REST API has no first-class filter for custom-field values.
+// List all non-archived projects in a workspace.
+export async function fetchWorkspaceProjects(
+  workspaceGid: string,
+): Promise<AsanaProject[]> {
+  const out: AsanaProject[] = [];
+  let offset: string | undefined;
+  do {
+    const params = new URLSearchParams({
+      workspace: workspaceGid,
+      archived: "false",
+      opt_fields: "gid,name",
+      limit: "100",
+    });
+    if (offset) params.set("offset", offset);
+    const page = await asanaFetch(`/projects?${params.toString()}`);
+    for (const p of page.data as AsanaProject[]) out.push(p);
+    offset = page.next_page?.offset;
+  } while (offset);
+  return out;
+}
+
+// Fetch all incomplete tasks in a single project.
 export async function fetchProjectTasks(projectGid: string): Promise<AsanaTask[]> {
   const results: AsanaTask[] = [];
   let offset: string | undefined;
-
   do {
     const params = new URLSearchParams({
       project: projectGid,
       completed_since: "now", // returns only incomplete tasks
-      opt_fields: FIELDS,
+      opt_fields: TASK_FIELDS,
       limit: "100",
     });
     if (offset) params.set("offset", offset);
-
     const page = await asanaFetch(`/tasks?${params.toString()}`);
     for (const t of page.data as AsanaTask[]) results.push(t);
     offset = page.next_page?.offset;
   } while (offset);
-
   return results;
+}
+
+// Resolve sprint prefixes to the matching Asana projects (case-insensitive
+// "starts with"). Returns one entry per matched project, with the prefix
+// used as the canonical sprint label.
+export type ResolvedSprint = {
+  prefix: string;       // the configured prefix, used as the sprint label
+  project: AsanaProject;
+};
+
+export function resolveSprintProjects(
+  prefixes: string[],
+  projects: AsanaProject[],
+): ResolvedSprint[] {
+  const out: ResolvedSprint[] = [];
+  for (const prefix of prefixes) {
+    const lower = prefix.toLowerCase();
+    for (const p of projects) {
+      if (p.name.toLowerCase().startsWith(lower)) {
+        out.push({ prefix, project: p });
+      }
+    }
+  }
+  return out;
 }

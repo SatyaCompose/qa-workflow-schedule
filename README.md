@@ -71,17 +71,21 @@ curl -H "Authorization: Bearer $ASANA_TOKEN" \
 
 Set in `.env`:
 ```
-ASANA_PROJECT_GID=<project_gid>
+ASANA_WORKSPACE_GID=<workspace_gid>     # from the Asana URL: app.asana.com/1/<workspace>/...
 ASANA_SOURCE_USER_GIDS=<gid1>,<gid2>
-ASANA_SPRINTS=Sprint 13                # comma-separated sprint names
-                                       # (matches the "Sprint Allocation" custom field)
-TARGET_USERS=Person 1,Person 2,Person 3  # names only — target users do not
-                                         # need Asana accounts; they live only in this app
+ASANA_SPRINTS=Sprint 12,Sprint 13       # comma-separated project-name prefixes
+                                        # (case-insensitive "starts with" against project names)
+TARGET_USERS=Person 1,Person 2,Person 3 # names only — target users do not
+                                        # need Asana accounts; they live only in this app
 ```
 
-To track an additional sprint later, append its name to `ASANA_SPRINTS`.
-**Order matters** — the first sprint name is treated as the oldest (and
-therefore highest priority within the same QA priority band).
+**How sprint matching works:** Each entry in `ASANA_SPRINTS` is matched as a
+case-insensitive prefix against your Asana project names. So `Sprint 12`
+matches a project called `"Sprint 12 - 2026 - Website Development"`. Tickets
+are fetched from each matching project.
+
+**Order matters:** the first sprint listed is treated as the oldest (highest
+priority). To track an additional sprint later, append its prefix to the list.
 
 ### 3. Install + run locally
 ```bash
