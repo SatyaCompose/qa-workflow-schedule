@@ -90,14 +90,17 @@ export async function runSync(): Promise<SyncResult> {
       const dev_status = devStatusOf(a.task);
       const sprint = sprintByGid.get(a.task.gid) ?? null;
 
-      // Detect a P1/P2/P3 → not-P1/P2/P3 transition. Credit the prior
-      // assignee (the person who was holding it when it moved on).
+      // Credit the prior assignee whenever a ticket's priority CHANGES away
+      // from a QA-verify state (P1/P2/P3). Catching ANY change (not just
+      // exits to P4) means a single ticket tested in Preview → UAT → Staging
+      // on the same day counts 3 separate completions, even if syncs miss
+      // the brief intermediate "Ready for ..." (P4) state between phases.
       const prev = priorById.get(a.task.gid);
       if (
         prev &&
         prev.priority &&
         QA_PRIORITIES.has(prev.priority) &&
-        !QA_PRIORITIES.has(priority)
+        prev.priority !== priority
       ) {
         completions.push({
           task_gid: a.task.gid,

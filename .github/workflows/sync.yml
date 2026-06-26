@@ -2,12 +2,11 @@ name: Hourly Asana Sync
 
 on:
   schedule:
-    # Hourly between 6:00 AM and 10:00 PM IST, Monday-Friday only.
-    # IST = UTC+5:30, so in UTC that's 00:30..16:30 at minute 30.
-    # Weekday list in cron is 1=Mon..5=Fri. Saturday/Sunday IST aligns with
-    # the same UTC day at these times since 00:30+ UTC is in the same day.
-    # 17 runs/day × 5 days = 85 runs/week.
-    - cron: "30 0-16 * * 1-5"
+    # Hourly between 6:00 AM and 10:00 PM IST, all 7 days.
+    # IST = UTC+5:30, so in UTC that's 00:30..16:30 at minute 30 (17 runs/day).
+    # Weekends are included on purpose: the team is nominally off, but if
+    # anyone works a Saturday/Sunday their completions should still be tracked.
+    - cron: "30 0-16 * * *"
   workflow_dispatch: {}
 
 permissions:

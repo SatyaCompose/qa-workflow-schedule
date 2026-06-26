@@ -1,5 +1,5 @@
 import ExcelJS from "exceljs";
-import { SnapshotRow } from "./db";
+import { CompletionRow, SnapshotRow } from "./db";
 
 const HEADER_FILL: ExcelJS.FillPattern = {
   type: "pattern",
@@ -52,10 +52,14 @@ export async function buildMonthlyWorkbook(
   month: string,
   snapshots: SnapshotRow[],
   sprintOrder: string[],
+  completions: CompletionRow[] = [],
 ): Promise<ArrayBuffer> {
   const wb = new ExcelJS.Workbook();
   wb.creator = "QA Work Allotment";
   wb.created = new Date();
+
+  // Sheet 1: Completions summary — who completed what this month.
+  addCompletionsSheet(wb, month, completions);
 
   const byDate = new Map<string, SnapshotRow[]>();
   for (const r of snapshots) {
@@ -79,6 +83,43 @@ export async function buildMonthlyWorkbook(
   const out = new Uint8Array(src.byteLength);
   out.set(src);
   return out.buffer;
+}
+
+function addCompletionsSheet(
+  wb: ExcelJS.Workbook,
+  month: string,
+  rows: CompletionRow[],
+) {
+  const summary = wb.addWorksheet(`Completions ${month}`);
+  summary.columns = [
+    { header: "Person",              key: "person", width: 24 },
+    { header: "Completed (month)",   key: "count",  width: 18 },
+  ];
+  summary.getRow(1).font = { bold: true };
+  summary.getRow(1).eachCell((c) => (c.fill = HEADER_FILL));
+
+  const byPerson = new Map<string, number>();
+  for (const r of rows) byPerson.set(r.completed_by, (byPerson.get(r.completed_by) ?? 0) + 1);
+  const sorted = [...byPerson.entries()].sort((a, b) => b[1] - a[1]);
+  for (const [person, count] of sorted) summary.addRow({ person, count });
+
+  summary.addRow({});
+  const detailHeader = summary.addRow(["Date", "Person", "Task", "From → To", "Sprint"]);
+  detailHeader.font = { bold: true };
+  detailHeader.eachCell((c) => (c.fill = HEADER_FILL));
+
+  const detailRows = rows
+    .slice()
+    .sort((a, b) => a.completed_at.localeCompare(b.completed_at));
+  for (const r of detailRows) {
+    summary.addRow([
+      r.completed_date,
+      r.completed_by,
+      r.task_url ? { text: r.task_name, hyperlink: r.task_url } : r.task_name,
+      `${r.from_priority ?? ""} → ${r.to_priority ?? ""}`,
+      r.sprint ?? "",
+    ]);
+  }
 }
 
 function addDailySheet(

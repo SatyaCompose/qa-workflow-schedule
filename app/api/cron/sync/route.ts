@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isWeekendIst } from "@/lib/ist";
 import { runSync } from "@/lib/sync";
 
 export const dynamic = "force-dynamic";
@@ -15,16 +14,10 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Weekends in IST: the team doesn't work, so we skip the sync entirely.
-  // Friday's data stays visible; Monday morning's first sync picks things up
-  // again. Returns 200 so GitHub Actions / cron doesn't flag the no-op as failure.
-  if (isWeekendIst()) {
-    return NextResponse.json(
-      { ok: true, skipped: "weekend (IST)" },
-      { status: 200 },
-    );
-  }
-
+  // Note: sync runs all 7 days. The team is *nominally* off on Sat/Sun, but
+  // if any QA person works a weekend their completions should still be
+  // tracked. Use target_status (leave/regression) on individual rows to
+  // reflect who's actually unavailable.
   const result = await runSync();
   return NextResponse.json(result, { status: result.ok ? 200 : 500 });
 }

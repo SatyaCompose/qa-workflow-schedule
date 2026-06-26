@@ -32,16 +32,27 @@ export async function GET(req: NextRequest) {
   const { start, end } = monthBounds(month);
 
   const db = supabase();
-  const { data, error } = await db
-    .from("daily_snapshots")
-    .select("*")
-    .gte("snapshot_date", start)
-    .lt("snapshot_date", end)
-    .order("snapshot_date", { ascending: true })
-    .order("assigned_to", { ascending: true });
+  const [{ data, error }, { data: comps, error: cErr }] = await Promise.all([
+    db
+      .from("daily_snapshots")
+      .select("*")
+      .gte("snapshot_date", start)
+      .lt("snapshot_date", end)
+      .order("snapshot_date", { ascending: true })
+      .order("assigned_to", { ascending: true }),
+    db
+      .from("completions")
+      .select("*")
+      .gte("completed_date", start)
+      .lt("completed_date", end)
+      .order("completed_at", { ascending: true }),
+  ]);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+  if (cErr) {
+    return NextResponse.json({ error: cErr.message }, { status: 500 });
   }
 
   let sprintOrder: string[] = [];
@@ -51,7 +62,7 @@ export async function GET(req: NextRequest) {
     /* fall through with empty sprint order */
   }
 
-  const buffer = await buildMonthlyWorkbook(month, data ?? [], sprintOrder);
+  const buffer = await buildMonthlyWorkbook(month, data ?? [], sprintOrder, comps ?? []);
 
   return new NextResponse(buffer, {
     headers: {

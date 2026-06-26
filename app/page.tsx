@@ -203,6 +203,120 @@ export default function Page() {
   );
 }
 
+const STATUS_STYLE: Record<string, { bg: string; fg: string }> = {
+  available: { bg: "#dcfce7", fg: "#166534" },
+  regression: { bg: "#fef3c7", fg: "#92400e" },
+  leave: { bg: "#fee2e2", fg: "#991b1b" },
+};
+
+function TeamStatusPanel({ team, onChanged }: { team: TeamMember[]; onChanged: () => void }) {
+  const [editing, setEditing] = useState<string | null>(null);
+
+  if (team.length === 0) return null;
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12, marginBottom: 16 }}>
+      {team.map((m) => {
+        const s = STATUS_STYLE[m.status] ?? STATUS_STYLE.available;
+        const usePct = m.capacity > 0 ? Math.min(100, Math.round((m.active / m.capacity) * 100)) : 0;
+        return (
+          <div key={m.name} style={{ background: "#fff", border: "1px solid #e5e5e5", borderRadius: 8, padding: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <strong>{m.name}</strong>
+              <span style={{ background: s.bg, color: s.fg, padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 700 }}>
+                {m.status}
+              </span>
+            </div>
+            <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
+              {m.hours}h available · capacity {m.capacity} tickets
+            </div>
+            <div style={{ marginTop: 8, background: "#f3f4f6", borderRadius: 4, height: 6, overflow: "hidden" }}>
+              <div style={{ width: `${usePct}%`, height: "100%", background: usePct >= 100 ? "#dc2626" : usePct >= 80 ? "#f59e0b" : "#10b981" }} />
+            </div>
+            <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>
+              {m.active} active / {m.capacity} cap ({usePct}%)
+            </div>
+            <div style={{ fontSize: 12, color: "#374151", marginTop: 8, display: "flex", gap: 12 }}>
+              <span>✓ today: <b>{m.completedToday}</b></span>
+              <span>this month: <b>{m.completedMonth}</b></span>
+              <span>total: <b>{m.completedTotal}</b></span>
+            </div>
+            {m.notes && <div style={{ fontSize: 12, color: "#777", marginTop: 6, fontStyle: "italic" }}>{m.notes}</div>}
+            <button
+              onClick={() => setEditing(m.name)}
+              style={{ marginTop: 10, background: "#111", color: "#fff", border: 0, padding: "6px 10px", borderRadius: 6, fontSize: 12, cursor: "pointer" }}
+            >
+              Edit status
+            </button>
+          </div>
+        );
+      })}
+      {editing && <StatusEditor member={team.find((m) => m.name === editing)!} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); onChanged(); }} />}
+    </div>
+  );
+}
+
+function StatusEditor({
+  member, onClose, onSaved,
+}: { member: TeamMember; onClose: () => void; onSaved: () => void }) {
+  const [status, setStatus] = useState(member.status);
+  const [hours, setHours] = useState(member.hours);
+  const [notes, setNotes] = useState(member.notes ?? "");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/admin/target-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ name: member.name, status, hours, notes: notes || null }),
+      });
+      if (res.status === 401) setError("Auth required. Refresh and try again.");
+      else if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        setError(b.error ?? `HTTP ${res.status}`);
+      } else onSaved();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 8, padding: 20, width: 360, maxWidth: "90vw" }}>
+        <h3 style={{ margin: "0 0 12px" }}>Edit: {member.name}</h3>
+        <label style={{ display: "block", fontSize: 13, marginBottom: 4 }}>Status</label>
+        <select value={status} onChange={(e) => {
+          const v = e.target.value as TeamMember["status"];
+          setStatus(v);
+          if (v === "leave") setHours(0);
+          else if (v === "available") setHours(8);
+        }} style={{ width: "100%", padding: 8, borderRadius: 6, border: "1px solid #ddd", marginBottom: 12 }}>
+          <option value="available">Available</option>
+          <option value="regression">Regression</option>
+          <option value="leave">Leave</option>
+        </select>
+        <label style={{ display: "block", fontSize: 13, marginBottom: 4 }}>Hours available (0–8)</label>
+        <input type="number" min={0} max={8} value={hours} onChange={(e) => setHours(parseInt(e.target.value || "0", 10))}
+               disabled={status === "leave" || status === "available"}
+               style={{ width: "100%", padding: 8, borderRadius: 6, border: "1px solid #ddd", marginBottom: 12 }} />
+        <label style={{ display: "block", fontSize: 13, marginBottom: 4 }}>Notes (optional)</label>
+        <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
+                  style={{ width: "100%", padding: 8, borderRadius: 6, border: "1px solid #ddd", marginBottom: 12, resize: "vertical" }} />
+        {error && <div style={{ color: "#c00", fontSize: 12, marginBottom: 8 }}>{error}</div>}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button onClick={onClose} disabled={saving} style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>Cancel</button>
+          <button onClick={save} disabled={saving} style={{ padding: "8px 14px", borderRadius: 6, border: 0, background: "#111", color: "#fff", cursor: "pointer" }}>{saving ? "Saving…" : "Save"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PriorityChip({ priority, count }: { priority: "P1" | "P2" | "P3" | "P4"; count: number }) {
   const s = PRIORITY_STYLE[priority];
   return (
