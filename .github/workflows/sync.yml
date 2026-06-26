@@ -2,11 +2,14 @@ name: Hourly Asana Sync
 
 on:
   schedule:
-    # Hourly between 6:00 AM and 10:00 PM IST, all 7 days.
-    # IST = UTC+5:30, so in UTC that's 00:30..16:30 at minute 30 (17 runs/day).
-    # Weekends are included on purpose: the team is nominally off, but if
-    # anyone works a Saturday/Sunday their completions should still be tracked.
-    - cron: "30 0-16 * * *"
+    # Every 15 minutes during the IST working window (06:00-22:00).
+    # GitHub Actions cron uses UTC. IST = UTC+5:30, so in UTC the window is
+    # 00:30..16:30. Three cron entries give precise 15-min ticks inside that
+    # range without leaking into off-hours.
+    # Total runs/day: 2 + 60 + 3 = 65.
+    - cron: "30,45 0 * * *"          # UTC 00:30, 00:45 → IST 06:00, 06:15
+    - cron: "*/15 1-15 * * *"        # UTC 01:00..15:45 → IST 06:30..21:15
+    - cron: "0,15,30 16 * * *"       # UTC 16:00, 16:15, 16:30 → IST 21:30..22:00
   workflow_dispatch: {}
 
 permissions:

@@ -1,5 +1,5 @@
 import ExcelJS from "exceljs";
-import { CompletionRow, SnapshotRow } from "./db";
+import { CompletionRow, SnapshotRow, TicketRow } from "./db";
 
 const HEADER_FILL: ExcelJS.FillPattern = {
   type: "pattern",
@@ -21,6 +21,80 @@ const PRIORITY_FILLS: Record<string, ExcelJS.FillPattern> = {
 };
 
 const PRIORITY_RANK: Record<string, number> = { P1: 1, P2: 2, P3: 3, P4: 4 };
+
+// Build a single-sheet workbook listing every ticket ever seen — both active
+// and archived — with their current status. Sorted by archived flag, then
+// sprint age (older first), then priority.
+export async function buildCurrentStateWorkbook(
+  tickets: TicketRow[],
+  sprintOrder: string[],
+): Promise<ArrayBuffer> {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "QA Work Allotment";
+  wb.created = new Date();
+
+  const ws = wb.addWorksheet("All tickets");
+  ws.columns = [
+    { header: "Priority",          key: "priority",          width: 8  },
+    { header: "Status",            key: "row_status",        width: 12 },
+    { header: "Assigned",          key: "assigned_to",       width: 18 },
+    { header: "Task ID",           key: "task_gid",          width: 20 },
+    { header: "Task Name",         key: "task_name",         width: 46 },
+    { header: "Dev Status",        key: "dev_status",        width: 30 },
+    { header: "Sprint",            key: "sprint",            width: 12 },
+    { header: "Original",          key: "original_assignee", width: 18 },
+    { header: "Due",               key: "due_on",            width: 12 },
+    { header: "First Seen",        key: "first_seen",        width: 12 },
+    { header: "Last Seen",         key: "last_seen",         width: 12 },
+    { header: "Manual",            key: "manual",            width: 8  },
+    { header: "Link",              key: "task_url",          width: 36 },
+  ];
+
+  const header = ws.getRow(1);
+  header.font = { bold: true };
+  header.eachCell((c) => (c.fill = HEADER_FILL));
+  ws.views = [{ state: "frozen", ySplit: 1 }];
+  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 13 } };
+
+  const sorted = tickets.slice().sort((a, b) => {
+    if (a.archived !== b.archived) return a.archived ? 1 : -1;
+    const sa = sprintRankOf(a.sprint, sprintOrder);
+    const sb = sprintRankOf(b.sprint, sprintOrder);
+    if (sa !== sb) return sa - sb;
+    const pa = PRIORITY_RANK[a.priority ?? "P4"] ?? 5;
+    const pb = PRIORITY_RANK[b.priority ?? "P4"] ?? 5;
+    if (pa !== pb) return pa - pb;
+    return a.task_gid.localeCompare(b.task_gid);
+  });
+
+  for (const r of sorted) {
+    const row = ws.addRow({
+      priority: r.priority ?? "P4",
+      row_status: r.archived ? "Archived" : r.asana_status ?? "open",
+      assigned_to: r.assigned_to,
+      task_gid: r.task_gid,
+      task_name: r.task_name,
+      dev_status: r.dev_status ?? "",
+      sprint: r.sprint ?? "",
+      original_assignee: r.original_assignee ?? "",
+      due_on: r.due_on ?? "",
+      first_seen: r.first_seen?.slice(0, 10) ?? "",
+      last_seen: r.last_seen?.slice(0, 10) ?? "",
+      manual: r.manual_override ? "yes" : "",
+      task_url: r.task_url ?? "",
+    });
+    const p = r.priority ?? "P4";
+    const fill = PRIORITY_FILLS[p];
+    if (fill) row.getCell("priority").fill = fill;
+    if (r.archived) row.eachCell((c) => (c.font = { color: { argb: "FF9CA3AF" } }));
+  }
+
+  const buf = await wb.xlsx.writeBuffer();
+  const src = buf as unknown as Uint8Array;
+  const out = new Uint8Array(src.byteLength);
+  out.set(src);
+  return out.buffer;
+}
 
 function sprintRankOf(sprint: string | null, order: string[]): number {
   if (!sprint) return order.length + 1;

@@ -1,74 +1,37 @@
 import { NextRequest, NextResponse } from "next/server";
 import { config } from "@/lib/config";
 import { supabase } from "@/lib/db";
-import { buildMonthlyWorkbook } from "@/lib/excel";
-import { istMonthString } from "@/lib/ist";
+import { buildCurrentStateWorkbook } from "@/lib/excel";
 
 export const dynamic = "force-dynamic";
 
-function isValidMonth(m: string): boolean {
-  return /^\d{4}-(0[1-9]|1[0-2])$/.test(m);
-}
-
-function monthBounds(month: string): { start: string; end: string } {
-  const [y, m] = month.split("-").map(Number);
-  const start = `${month}-01`;
-  // first day of the *next* month, exclusive upper bound
-  const next = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
-  return { start, end: next };
-}
-
-export async function GET(req: NextRequest) {
-  const url = new URL(req.url);
-  const month = url.searchParams.get("month") ?? istMonthString();
-
-  if (!isValidMonth(month)) {
-    return NextResponse.json(
-      { error: "month must be in YYYY-MM format" },
-      { status: 400 },
-    );
-  }
-
-  const { start, end } = monthBounds(month);
-
+// Returns one .xlsx with every ticket ever seen (active + archived) and its
+// current status. One sheet, sorted by sprint age then priority. Use this as
+// the always-up-to-date snapshot. Historical daily snapshots remain in the
+// `daily_snapshots` table — query them separately if needed.
+export async function GET(_req: NextRequest) {
   const db = supabase();
-  const [{ data, error }, { data: comps, error: cErr }] = await Promise.all([
-    db
-      .from("daily_snapshots")
-      .select("*")
-      .gte("snapshot_date", start)
-      .lt("snapshot_date", end)
-      .order("snapshot_date", { ascending: true })
-      .order("assigned_to", { ascending: true }),
-    db
-      .from("completions")
-      .select("*")
-      .gte("completed_date", start)
-      .lt("completed_date", end)
-      .order("completed_at", { ascending: true }),
-  ]);
 
+  const { data, error } = await db.from("tickets").select("*");
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-  if (cErr) {
-    return NextResponse.json({ error: cErr.message }, { status: 500 });
   }
 
   let sprintOrder: string[] = [];
   try {
     sprintOrder = config().sprintPrefixes;
   } catch {
-    /* fall through with empty sprint order */
+    /* env not loaded — that's fine for the download */
   }
 
-  const buffer = await buildMonthlyWorkbook(month, data ?? [], sprintOrder, comps ?? []);
+  const buffer = await buildCurrentStateWorkbook(data ?? [], sprintOrder);
+  const stamp = new Date().toISOString().slice(0, 10);
 
   return new NextResponse(buffer, {
     headers: {
       "Content-Type":
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "Content-Disposition": `attachment; filename="qa-allotment-${month}.xlsx"`,
+      "Content-Disposition": `attachment; filename="qa-allotment-${stamp}.xlsx"`,
       "Cache-Control": "no-store",
     },
   });

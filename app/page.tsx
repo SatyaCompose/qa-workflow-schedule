@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+// lastMonths removed — month picker no longer used on the home page.
+
 type Priority = "P1" | "P2" | "P3" | "P4" | null;
 
 type Ticket = {
@@ -49,17 +51,6 @@ type Run = {
   error: string | null;
 };
 
-function lastMonths(n: number): string[] {
-  const now = new Date();
-  const istNow = new Date(now.getTime() + (5 * 60 + 30) * 60_000);
-  const months: string[] = [];
-  for (let i = 0; i < n; i++) {
-    const d = new Date(Date.UTC(istNow.getUTCFullYear(), istNow.getUTCMonth() - i, 1));
-    months.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`);
-  }
-  return months;
-}
-
 const PRIORITY_RANK: Record<string, number> = { P1: 1, P2: 2, P3: 3, P4: 4 };
 
 function sprintRankOf(sprintName: string | null, sprintOrder: string[]): number {
@@ -90,8 +81,6 @@ export default function Page() {
   const [sprintOrder, setSprintOrder] = useState<string[]>([]);
   const [lastRun, setLastRun] = useState<Run | null>(null);
   const [loading, setLoading] = useState(true);
-  const [month, setMonth] = useState(lastMonths(1)[0]);
-  const monthOptions = useMemo(() => lastMonths(12), []);
 
   const refresh = async () => {
     const r = await fetch("/api/tickets");
@@ -109,7 +98,6 @@ export default function Page() {
 
   const cmp = useMemo(() => makeComparator(sprintOrder), [sprintOrder]);
   const active = tickets.filter((t) => !t.archived).sort(cmp);
-  const archived = tickets.filter((t) => t.archived).sort(cmp);
 
   const byPriority = active.reduce<Record<string, number>>((acc, t) => {
     const p = t.priority ?? "P4";
@@ -119,12 +107,7 @@ export default function Page() {
 
   return (
     <main style={{ maxWidth: 1280, margin: "0 auto", padding: "32px 24px 64px" }}>
-      <Header
-        month={month}
-        monthOptions={monthOptions}
-        onMonthChange={setMonth}
-        lastRun={lastRun}
-      />
+      <Header lastRun={lastRun} />
 
       <Section title="Team status">
         <TeamStatusPanel team={team} onChanged={refresh} />
@@ -136,22 +119,11 @@ export default function Page() {
       >
         <Table rows={active} targets={targets} loading={loading} onReassigned={refresh} canReassign />
       </Section>
-
-      <Section title={`Archived (${archived.length})`}>
-        <Table rows={archived} targets={targets} loading={loading} onReassigned={refresh} canReassign={false} />
-      </Section>
     </main>
   );
 }
 
-function Header({
-  month, monthOptions, onMonthChange, lastRun,
-}: {
-  month: string;
-  monthOptions: string[];
-  onMonthChange: (m: string) => void;
-  lastRun: Run | null;
-}) {
+function Header({ lastRun }: { lastRun: Run | null }) {
   return (
     <header style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16, flexWrap: "wrap", marginBottom: 24 }}>
       <div>
@@ -176,16 +148,8 @@ function Header({
         </p>
       </div>
       <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-        <select
-          value={month}
-          onChange={(e) => onMonthChange(e.target.value)}
-          className="qa-select"
-        >
-          {monthOptions.map((m) => (<option key={m} value={m}>{m}</option>))}
-        </select>
-        <a href={`/api/download?month=${month}`} className="btn btn-primary">
-          ⤓ Download {month}.xlsx
-        </a>
+        <a href="/ledger" className="btn btn-secondary">📊 Live sheet</a>
+        <a href="/api/download" className="btn btn-primary">⤓ Download xlsx</a>
       </div>
     </header>
   );
