@@ -22,6 +22,22 @@ export type TicketRow = {
   sprint: string | null;
 };
 
+export type CompletionRow = {
+  id: number;
+  task_gid: string;
+  task_name: string;
+  task_url: string | null;
+  completed_at: string;
+  completed_date: string;
+  completed_by: string;
+  completed_by_gid: string;
+  from_priority: "P1" | "P2" | "P3" | null;
+  to_priority: "P1" | "P2" | "P3" | "P4" | null;
+  from_dev_status: string | null;
+  to_dev_status: string | null;
+  sprint: string | null;
+};
+
 export type SnapshotRow = {
   snapshot_date: string;
   task_gid: string;

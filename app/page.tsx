@@ -25,6 +25,20 @@ type Ticket = {
 
 type Target = { gid: string; name: string };
 
+type TeamMember = {
+  name: string;
+  gid: string;
+  status: "available" | "regression" | "leave";
+  hours: number;
+  notes: string | null;
+  capacity: number;
+  active: number;
+  completedToday: number;
+  completedMonth: number;
+  completedTotal: number;
+  updated_at: string;
+};
+
 type Run = {
   started_at: string;
   finished_at: string | null;
@@ -84,6 +98,7 @@ const PRIORITY_STYLE: Record<string, { bg: string; fg: string }> = {
 export default function Page() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [targets, setTargets] = useState<Target[]>([]);
+  const [team, setTeam] = useState<TeamMember[]>([]);
   const [sprintOrder, setSprintOrder] = useState<string[]>([]);
   const [lastRun, setLastRun] = useState<Run | null>(null);
   const [loading, setLoading] = useState(true);
@@ -95,6 +110,7 @@ export default function Page() {
     const d = await r.json();
     setTickets(d.tickets ?? []);
     setTargets(d.targets ?? []);
+    setTeam(d.teamStatus ?? []);
     setSprintOrder(d.sprints ?? []);
     setLastRun(d.lastRun ?? null);
   };
@@ -153,6 +169,11 @@ export default function Page() {
         ) : (
           <span>No syncs recorded yet.</span>
         )}
+      </section>
+
+      <section style={{ marginTop: 24 }}>
+        <h2 style={{ fontSize: 18 }}>Team status</h2>
+        <TeamStatusPanel team={team} onChanged={refresh} />
       </section>
 
       <section style={{ marginTop: 24 }}>

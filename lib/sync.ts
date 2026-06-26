@@ -15,8 +15,11 @@ export type SyncResult = {
   newCount: number;
   seenCount: number;
   archivedCount: number;
+  completionCount?: number;
   error?: string;
 };
+
+const QA_PRIORITIES = new Set(["P1", "P2", "P3"]);
 
 export async function runSync(): Promise<SyncResult> {
   const db = supabase();
@@ -30,10 +33,8 @@ export async function runSync(): Promise<SyncResult> {
   try {
     const { workspaceGid, source, sprintPrefixes, targets } = config();
 
-    // Discover sprint projects by name prefix.
     const allProjects = await fetchWorkspaceProjects(workspaceGid);
     const resolved = resolveSprintProjects(sprintPrefixes, allProjects);
-
     if (resolved.length === 0) {
       throw new Error(
         `No Asana projects matched ASANA_SPRINTS=[${sprintPrefixes.join(", ")}]. ` +
@@ -41,18 +42,15 @@ export async function runSync(): Promise<SyncResult> {
       );
     }
 
-    // For each sprint project, fetch its tasks. Tag each task with the
-    // matched prefix so we have a consistent sprint label even when project
-    // names differ in their suffix.
     type Tagged = { task: AsanaTask; sprintLabel: string };
     const tagged: Tagged[] = [];
-    const seenGid = new Set<string>();
+    const seenGidSet = new Set<string>();
     for (const { prefix, project } of resolved) {
       const tasks = await fetchProjectTasks(project.gid);
       for (const t of tasks) {
         if (!t.assignee || !source.includes(t.assignee.gid)) continue;
-        if (seenGid.has(t.gid)) continue; // a task could live in multiple sprint projects
-        seenGid.add(t.gid);
+        if (seenGidSet.has(t.gid)) continue;
+        seenGidSet.add(t.gid);
         tagged.push({ task: t, sprintLabel: prefix });
       }
     }
@@ -60,13 +58,63 @@ export async function runSync(): Promise<SyncResult> {
     const tasks = tagged.map((tg) => tg.task);
     const sprintByGid = new Map(tagged.map((tg) => [tg.task.gid, tg.sprintLabel]));
 
-    const assignments = await splitWithStability(tasks, targets);
+    // Snapshot of existing rows (priority + dev_status) so we can detect
+    // completions caused by transitions out of P1/P2/P3.
+    const taskGids = tasks.map((t) => t.gid);
+    const priorById = new Map<
+      string,
+      { priority: string | null; dev_status: string | null; assigned_to: string; assigned_to_gid: string }
+    >();
+    if (taskGids.length) {
+      const { data: priorRows } = await db
+        .from("tickets")
+        .select("task_gid, priority, dev_status, assigned_to, assigned_to_gid")
+        .in("task_gid", taskGids);
+      for (const r of priorRows ?? []) {
+        priorById.set(r.task_gid, {
+          priority: r.priority,
+          dev_status: r.dev_status,
+          assigned_to: r.assigned_to,
+          assigned_to_gid: r.assigned_to_gid,
+        });
+      }
+    }
 
+    const assignments = await splitWithStability(tasks, targets);
     const now = new Date().toISOString();
+    const today = istDateString();
+
+    const completions: any[] = [];
     const upserts = assignments.map((a) => {
       const priority = computePriority(a.task);
       const dev_status = devStatusOf(a.task);
       const sprint = sprintByGid.get(a.task.gid) ?? null;
+
+      // Detect a P1/P2/P3 → not-P1/P2/P3 transition. Credit the prior
+      // assignee (the person who was holding it when it moved on).
+      const prev = priorById.get(a.task.gid);
+      if (
+        prev &&
+        prev.priority &&
+        QA_PRIORITIES.has(prev.priority) &&
+        !QA_PRIORITIES.has(priority)
+      ) {
+        completions.push({
+          task_gid: a.task.gid,
+          task_name: a.task.name,
+          task_url: a.task.permalink_url,
+          completed_at: now,
+          completed_date: today,
+          completed_by: prev.assigned_to,
+          completed_by_gid: prev.assigned_to_gid,
+          from_priority: prev.priority,
+          to_priority: priority,
+          from_dev_status: prev.dev_status,
+          to_dev_status: dev_status,
+          sprint,
+        });
+      }
+
       return {
         task_gid: a.task.gid,
         task_name: a.task.name,
@@ -92,6 +140,11 @@ export async function runSync(): Promise<SyncResult> {
         onConflict: "task_gid",
         ignoreDuplicates: false,
       });
+      if (error) throw error;
+    }
+
+    if (completions.length) {
+      const { error } = await db.from("completions").insert(completions);
       if (error) throw error;
     }
 
@@ -121,7 +174,6 @@ export async function runSync(): Promise<SyncResult> {
     }
 
     // Rewrite today's snapshot.
-    const today = istDateString();
     {
       const { error } = await db
         .from("daily_snapshots")
@@ -164,7 +216,7 @@ export async function runSync(): Promise<SyncResult> {
         .eq("id", runId);
     }
 
-    return { ok: true, newCount, seenCount, archivedCount };
+    return { ok: true, newCount, seenCount, archivedCount, completionCount: completions.length };
   } catch (err: any) {
     const msg = err?.message ?? String(err);
     if (runId) {

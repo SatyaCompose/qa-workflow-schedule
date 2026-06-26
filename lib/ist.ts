@@ -26,6 +26,24 @@ export function istMonthString(d: Date = new Date()): string {
   return `${year}-${month}`;
 }
 
+// Day-of-week in IST. 0 = Sunday, 1 = Monday, ..., 6 = Saturday.
+export function istDayOfWeek(d: Date = new Date()): number {
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Kolkata",
+    weekday: "short",
+  });
+  const m: Record<string, number> = {
+    Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
+  };
+  return m[fmt.format(d)];
+}
+
+// True if it's Saturday or Sunday in IST.
+export function isWeekendIst(d: Date = new Date()): boolean {
+  const dow = istDayOfWeek(d);
+  return dow === 0 || dow === 6;
+}
+
 // All YYYY-MM-DD dates in a given IST month, oldest first.
 export function istDatesInMonth(month: string): string[] {
   const [y, m] = month.split("-").map(Number);

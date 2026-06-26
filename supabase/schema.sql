@@ -81,3 +81,39 @@ create index if not exists tickets_priority_idx on tickets (priority);
 alter table daily_snapshots add column if not exists priority    text;
 alter table daily_snapshots add column if not exists dev_status  text;
 alter table daily_snapshots add column if not exists sprint      text;
+
+-- Per-target-user availability. Drives the splitter's load-balancing.
+-- A row exists only when status diverges from the default ("available", 8 hours).
+-- name matches a value in TARGET_USERS.
+create table if not exists target_status (
+  name       text    primary key,
+  status     text    not null default 'available',  -- 'available' | 'regression' | 'leave'
+  hours      int     not null default 8,            -- 0..8
+  notes      text,
+  updated_at timestamptz not null default now(),
+  constraint target_status_status_chk check (status in ('available','regression','leave')),
+  constraint target_status_hours_chk  check (hours between 0 and 8)
+);
+
+-- Per-ticket completion events. Written when a ticket transitions OUT of a
+-- QA-verify priority (P1/P2/P3) into something else (Ready for Staging,
+-- Deployed in PROD, etc.). Credit goes to whoever was assigned at that moment.
+create table if not exists completions (
+  id              bigserial primary key,
+  task_gid        text        not null,
+  task_name       text        not null,
+  task_url        text,
+  completed_at    timestamptz not null default now(),  -- when our sync detected it
+  completed_date  date        not null,                -- IST date for grouping
+  completed_by    text        not null,                -- target name credited
+  completed_by_gid text       not null,
+  from_priority   text,                                -- 'P1' | 'P2' | 'P3'
+  to_priority     text,                                -- typically 'P4' (or null if archived)
+  from_dev_status text,
+  to_dev_status   text,
+  sprint          text
+);
+
+create index if not exists completions_by_idx          on completions (completed_by);
+create index if not exists completions_date_idx        on completions (completed_date);
+create index if not exists completions_completed_at_idx on completions (completed_at);
