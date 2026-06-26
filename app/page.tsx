@@ -36,6 +36,9 @@ type TeamMember = {
   completedToday: number;
   completedMonth: number;
   completedTotal: number;
+  penaltyToday: number;
+  penaltyMonth: number;
+  penaltyTotal: number;
   updated_at: string;
 };
 
@@ -52,9 +55,17 @@ type Run = {
 const PRIORITY_RANK: Record<string, number> = { P1: 1, P2: 2, P3: 3, P4: 4 };
 
 function sprintRankOf(sprintName: string | null, sprintOrder: string[]): number {
-  if (!sprintName) return sprintOrder.length + 1;
-  const idx = sprintOrder.findIndex((s) => s.toLowerCase() === sprintName.toLowerCase());
-  return idx === -1 ? sprintOrder.length : idx;
+  if (!sprintName) return Number.MAX_SAFE_INTEGER;
+  if (sprintOrder.length > 0) {
+    const idx = sprintOrder.findIndex((s) => s.toLowerCase() === sprintName.toLowerCase());
+    if (idx !== -1) return idx;
+    // unknown sprint when an order is configured — sort after configured ones
+    // but still respect numeric ordering against each other
+  }
+  // Fallback: derive ordering from the trailing number ("Sprint 12" → 12).
+  // Ensures Sprint 12 < Sprint 13 < Sprint 100 even if env wasn't loaded.
+  const m = sprintName.match(/(\d+)/);
+  return m ? parseInt(m[1], 10) : Number.MAX_SAFE_INTEGER - 1;
 }
 
 function makeComparator(sprintOrder: string[]) {
@@ -145,7 +156,8 @@ function Header({ lastRun }: { lastRun: Run | null }) {
           )}
         </p>
       </div>
-      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <a href="/help" className="btn btn-secondary">? Help</a>
         <a href="/ledger" className="btn btn-secondary">📊 Live sheet</a>
         <a href="/api/download" className="btn btn-primary">⤓ Download xlsx</a>
       </div>
@@ -185,6 +197,7 @@ const STATUS_STYLE: Record<string, { bg: string; fg: string; border: string }> =
 
 function TeamStatusPanel({ team, onChanged }: { team: TeamMember[]; onChanged: () => void }) {
   const [editing, setEditing] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<string | null>(null);
 
   if (team.length === 0) return <p className="muted">No team configured.</p>;
 
@@ -216,9 +229,9 @@ function TeamStatusPanel({ team, onChanged }: { team: TeamMember[]; onChanged: (
               </div>
 
               <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, textAlign: "center" }}>
-                <Stat label="Today" value={m.completedToday} />
-                <Stat label="Month" value={m.completedMonth} />
-                <Stat label="Total" value={m.completedTotal} />
+                <NetStat label="Today" plus={m.completedToday} minus={m.penaltyToday} />
+                <NetStat label="Month" plus={m.completedMonth} minus={m.penaltyMonth} />
+                <NetStat label="Total" plus={m.completedTotal} minus={m.penaltyTotal} />
               </div>
 
               {m.notes && (
@@ -227,13 +240,22 @@ function TeamStatusPanel({ team, onChanged }: { team: TeamMember[]; onChanged: (
                 </div>
               )}
 
-              <button
-                onClick={() => setEditing(m.name)}
-                className="btn btn-secondary"
-                style={{ marginTop: 12, width: "100%", justifyContent: "center" }}
-              >
-                Edit
-              </button>
+              <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+                <button
+                  onClick={() => setViewing(m.name)}
+                  className="btn btn-secondary"
+                  style={{ flex: 1, justifyContent: "center" }}
+                >
+                  Tickets
+                </button>
+                <button
+                  onClick={() => setEditing(m.name)}
+                  className="btn btn-secondary"
+                  style={{ flex: 1, justifyContent: "center" }}
+                >
+                  Edit
+                </button>
+              </div>
             </div>
           );
         })}
@@ -245,7 +267,215 @@ function TeamStatusPanel({ team, onChanged }: { team: TeamMember[]; onChanged: (
           onSaved={() => { setEditing(null); onChanged(); }}
         />
       )}
+      {viewing && (
+        <PersonTicketsModal
+          name={viewing}
+          onClose={() => setViewing(null)}
+        />
+      )}
     </>
+  );
+}
+
+type QATicket = {
+  task_gid: string; task_name: string; task_url: string | null;
+  dev_status: string | null; sprint: string | null;
+  priority: "P1" | "P2" | "P3" | "P4" | null;
+  due_on: string | null; first_seen: string; last_seen?: string;
+  asana_status: string | null; original_assignee: string | null;
+  manual_override?: boolean;
+};
+
+type QACompletion = {
+  task_gid: string; task_name: string; task_url: string | null;
+  completed_at: string; completed_date: string;
+  from_priority: string | null; to_priority: string | null;
+  from_dev_status: string | null; to_dev_status: string | null;
+  sprint: string | null;
+};
+
+type QAPenalty = {
+  task_gid: string; task_name: string | null; task_url: string | null;
+  penalized_at: string; penalized_date: string;
+  priority: string; reason: string;
+};
+
+function PersonTicketsModal({ name, onClose }: { name: string; onClose: () => void }) {
+  const [tab, setTab] = useState<"active" | "completed" | "archived" | "penalties">("active");
+  const [data, setData] = useState<{ active: QATicket[]; archived: QATicket[]; completed: QACompletion[]; penalties: QAPenalty[] } | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetch(`/api/qa/${encodeURIComponent(name)}`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => { if (!cancelled) setData(d); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [name]);
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card modal-card" style={{ padding: 0, width: 820, maxWidth: "100%", maxHeight: "85vh", display: "flex", flexDirection: "column", boxShadow: "0 20px 50px rgba(0,0,0,0.25)" }}>
+        <div style={{ padding: "18px 20px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>{name}'s tickets</h3>
+            <div style={{ marginTop: 2, fontSize: 12, color: "var(--text-3)" }}>
+              {data
+                ? `${data.active.length} active · ${data.completed.length} completed · ${data.penalties.length} penalties · ${data.archived.length} archived`
+                : "Loading…"}
+            </div>
+          </div>
+          <button onClick={onClose} className="btn btn-secondary">Close</button>
+        </div>
+
+        <div style={{ padding: "0 20px", borderBottom: "1px solid var(--border)", display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Tab active={tab === "active"}    onClick={() => setTab("active")}    label="Active"      count={data?.active.length} />
+          <Tab active={tab === "completed"} onClick={() => setTab("completed")} label="Completed"   count={data?.completed.length} />
+          <Tab active={tab === "penalties"} onClick={() => setTab("penalties")} label="Penalties"   count={data?.penalties.length} />
+          <Tab active={tab === "archived"}  onClick={() => setTab("archived")}  label="Archived"    count={data?.archived.length} />
+        </div>
+
+        <div style={{ overflow: "auto", flex: 1, padding: "8px 0" }}>
+          {loading ? (
+            <p className="muted" style={{ padding: 20 }}>Loading…</p>
+          ) : tab === "active" ? (
+            <CompactTicketTable rows={data?.active ?? []} kind="ticket" />
+          ) : tab === "archived" ? (
+            <CompactTicketTable rows={data?.archived ?? []} kind="ticket" />
+          ) : tab === "completed" ? (
+            <CompactCompletionTable rows={data?.completed ?? []} />
+          ) : (
+            <CompactPenaltyTable rows={data?.penalties ?? []} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Tab({ active, onClick, label, count }: { active: boolean; onClick: () => void; label: string; count?: number }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        background: "none",
+        border: 0,
+        padding: "12px 8px",
+        marginBottom: -1,
+        cursor: "pointer",
+        fontSize: 13,
+        fontWeight: active ? 600 : 500,
+        color: active ? "var(--accent)" : "var(--text-2)",
+        borderBottom: active ? "2px solid var(--accent)" : "2px solid transparent",
+      }}
+    >
+      {label}{typeof count === "number" && <span style={{ marginLeft: 6, color: "var(--text-3)", fontWeight: 500 }}>({count})</span>}
+    </button>
+  );
+}
+
+function CompactTicketTable({ rows }: { rows: QATicket[]; kind: "ticket" }) {
+  if (rows.length === 0) return <p className="muted" style={{ padding: 20 }}>None.</p>;
+  return (
+    <table className="qa" style={{ fontSize: 12 }}>
+      <thead>
+        <tr>
+          <th style={{ width: 44 }}>Pri</th>
+          <th>Task</th>
+          <th style={{ width: 170 }}>Dev Status</th>
+          <th style={{ width: 90 }}>Sprint</th>
+          <th style={{ width: 90 }}>Due</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((t) => {
+          const p = t.priority ?? "P4";
+          return (
+            <tr key={t.task_gid}>
+              <td><span className={`badge badge-${p.toLowerCase()}`}>{p}</span></td>
+              <td>
+                <div style={{ fontWeight: 500 }}>
+                  {t.task_url ? <a href={t.task_url} target="_blank" rel="noreferrer">{t.task_name}</a> : t.task_name}
+                </div>
+                <div style={{ fontSize: 10, color: "var(--text-3)" }}>{t.task_gid}</div>
+              </td>
+              <td style={{ color: "var(--text-2)" }}>{t.dev_status ?? "—"}</td>
+              <td>{t.sprint ? <span className="chip" style={{ padding: "1px 6px", fontSize: 10 }}>{t.sprint}</span> : "—"}</td>
+              <td style={{ color: "var(--text-2)" }}>{t.due_on ?? "—"}</td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+function CompactPenaltyTable({ rows }: { rows: QAPenalty[] }) {
+  if (rows.length === 0) return <p className="muted" style={{ padding: 20 }}>No penalties.</p>;
+  return (
+    <table className="qa" style={{ fontSize: 12 }}>
+      <thead>
+        <tr>
+          <th style={{ width: 110 }}>Date</th>
+          <th>Task</th>
+          <th style={{ width: 70 }}>Phase</th>
+          <th style={{ width: 70 }}>Credit</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r, i) => (
+          <tr key={`${r.task_gid}-${i}`}>
+            <td style={{ color: "var(--text-2)" }}>{r.penalized_date}</td>
+            <td>
+              <div style={{ fontWeight: 500 }}>
+                {r.task_url ? <a href={r.task_url} target="_blank" rel="noreferrer">{r.task_name ?? r.task_gid}</a> : (r.task_name ?? r.task_gid)}
+              </div>
+              <div style={{ fontSize: 10, color: "var(--text-3)" }}>{r.reason}</div>
+            </td>
+            <td><span className={`badge badge-${r.priority.toLowerCase()}`}>{r.priority}</span></td>
+            <td style={{ fontWeight: 700, color: "#b91c1c" }}>−1</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function CompactCompletionTable({ rows }: { rows: QACompletion[] }) {
+  if (rows.length === 0) return <p className="muted" style={{ padding: 20 }}>None yet.</p>;
+  return (
+    <table className="qa" style={{ fontSize: 12 }}>
+      <thead>
+        <tr>
+          <th style={{ width: 110 }}>Date</th>
+          <th>Task</th>
+          <th style={{ width: 80 }}>Phase</th>
+          <th style={{ width: 90 }}>Sprint</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r, i) => {
+          const phase = r.from_priority ?? "P?";
+          return (
+            <tr key={`${r.task_gid}-${i}`}>
+              <td style={{ color: "var(--text-2)" }}>{r.completed_date}</td>
+              <td>
+                <div style={{ fontWeight: 500 }}>
+                  {r.task_url ? <a href={r.task_url} target="_blank" rel="noreferrer">{r.task_name}</a> : r.task_name}
+                </div>
+                <div style={{ fontSize: 10, color: "var(--text-3)" }}>
+                  {r.from_dev_status ?? "—"} → {r.to_dev_status ?? "—"}
+                </div>
+              </td>
+              <td><span className={`badge badge-${phase.toLowerCase()}`}>{phase}</span></td>
+              <td>{r.sprint ? <span className="chip" style={{ padding: "1px 6px", fontSize: 10 }}>{r.sprint}</span> : "—"}</td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
   );
 }
 
@@ -254,6 +484,22 @@ function Stat({ label, value }: { label: string; value: number }) {
     <div style={{ background: "#fafbfc", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 4px" }}>
       <div style={{ fontSize: 18, fontWeight: 700, lineHeight: 1.1 }}>{value}</div>
       <div style={{ fontSize: 10, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 2 }}>{label}</div>
+    </div>
+  );
+}
+
+function NetStat({ label, plus, minus }: { label: string; plus: number; minus: number }) {
+  const net = plus - minus;
+  const netColor = net > 0 ? "#15803d" : net < 0 ? "#b91c1c" : "var(--text-2)";
+  return (
+    <div style={{ background: "#fafbfc", border: "1px solid var(--border)", borderRadius: 8, padding: "6px 4px" }}>
+      <div style={{ fontSize: 17, fontWeight: 700, lineHeight: 1.1, color: netColor }}>
+        {net > 0 ? `+${net}` : net}
+      </div>
+      <div style={{ fontSize: 10, color: "var(--text-3)", marginTop: 2 }}>
+        <span style={{ color: "#15803d" }}>+{plus}</span> <span style={{ color: "#b91c1c" }}>−{minus}</span>
+      </div>
+      <div style={{ fontSize: 9, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 1 }}>{label}</div>
     </div>
   );
 }

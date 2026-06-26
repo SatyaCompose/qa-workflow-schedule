@@ -44,6 +44,16 @@ export function isWeekendIst(d: Date = new Date()): boolean {
   return dow === 0 || dow === 6;
 }
 
+// Hour (0..23) in IST.
+export function istHour(d: Date = new Date()): number {
+  const s = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    hour: "2-digit",
+    hour12: false,
+  }).format(d);
+  return parseInt(s, 10);
+}
+
 // All YYYY-MM-DD dates in a given IST month, oldest first.
 export function istDatesInMonth(month: string): string[] {
   const [y, m] = month.split("-").map(Number);

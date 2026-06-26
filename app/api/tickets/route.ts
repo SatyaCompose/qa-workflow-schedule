@@ -15,11 +15,12 @@ export async function GET() {
     const c = config();
     sprintOrder = c.sprintPrefixes;
     configuredTargets = c.targets;
-  } catch {
-    /* missing env vars — return derived targets below */
+  } catch (e) {
+    // Surface the failure to logs so debugging "why is sprintOrder empty?" is easy.
+    console.warn("[api/tickets] config() failed; sprint order will fall back to numeric extraction. Reason:", (e as Error).message);
   }
 
-  const [{ data: tickets, error: tErr }, { data: lastRun, error: rErr }, { data: comps, error: cErr }] =
+  const [{ data: tickets, error: tErr }, { data: lastRun, error: rErr }, { data: comps, error: cErr }, { data: pens, error: pErr }] =
     await Promise.all([
       db
         .from("tickets")
@@ -38,11 +39,17 @@ export async function GET() {
         .select("completed_by, completed_date")
         .order("completed_at", { ascending: false })
         .limit(2000),
+      db
+        .from("penalties")
+        .select("penalized_to, penalized_date")
+        .order("penalized_at", { ascending: false })
+        .limit(2000),
     ]);
 
   if (tErr) return NextResponse.json({ error: tErr.message }, { status: 500 });
   if (rErr) return NextResponse.json({ error: rErr.message }, { status: 500 });
   if (cErr) return NextResponse.json({ error: cErr.message }, { status: 500 });
+  if (pErr) return NextResponse.json({ error: pErr.message }, { status: 500 });
 
   const targets =
     configuredTargets.length > 0
@@ -78,6 +85,17 @@ export async function GET() {
       compMonthByName.set(c.completed_by, (compMonthByName.get(c.completed_by) ?? 0) + 1);
   }
 
+  const penTotalByName = new Map<string, number>();
+  const penTodayByName = new Map<string, number>();
+  const penMonthByName = new Map<string, number>();
+  for (const p of pens ?? []) {
+    penTotalByName.set(p.penalized_to, (penTotalByName.get(p.penalized_to) ?? 0) + 1);
+    if (p.penalized_date === today)
+      penTodayByName.set(p.penalized_to, (penTodayByName.get(p.penalized_to) ?? 0) + 1);
+    if (typeof p.penalized_date === "string" && p.penalized_date.startsWith(monthPrefix))
+      penMonthByName.set(p.penalized_to, (penMonthByName.get(p.penalized_to) ?? 0) + 1);
+  }
+
   const teamStatus = targets.map((t) => {
     const s = statuses.get(t.name) ?? defaultStatus(t.name);
     return {
@@ -91,6 +109,9 @@ export async function GET() {
       completedToday: compTodayByName.get(t.name) ?? 0,
       completedMonth: compMonthByName.get(t.name) ?? 0,
       completedTotal: compTotalByName.get(t.name) ?? 0,
+      penaltyToday: penTodayByName.get(t.name) ?? 0,
+      penaltyMonth: penMonthByName.get(t.name) ?? 0,
+      penaltyTotal: penTotalByName.get(t.name) ?? 0,
       updated_at: s.updated_at,
     };
   });

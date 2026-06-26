@@ -38,9 +38,13 @@ type TeamMember = {
 const PRIORITY_RANK: Record<string, number> = { P1: 1, P2: 2, P3: 3, P4: 4 };
 
 function sprintRankOf(s: string | null, order: string[]): number {
-  if (!s) return order.length + 1;
-  const i = order.findIndex((x) => x.toLowerCase() === s.toLowerCase());
-  return i === -1 ? order.length : i;
+  if (!s) return Number.MAX_SAFE_INTEGER;
+  if (order.length > 0) {
+    const i = order.findIndex((x) => x.toLowerCase() === s.toLowerCase());
+    if (i !== -1) return i;
+  }
+  const m = s.match(/(\d+)/);
+  return m ? parseInt(m[1], 10) : Number.MAX_SAFE_INTEGER - 1;
 }
 
 function cmp(a: Ticket, b: Ticket, sprintOrder: string[]): number {
@@ -132,8 +136,9 @@ export default function LedgerPage() {
             Auto-refreshes every 60s · {lastFetched ? `updated ${lastFetched.toLocaleTimeString()}` : "loading…"}
           </p>
         </div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <a href="/" className="btn btn-secondary">← Dashboard</a>
+          <a href="/help" className="btn btn-secondary">? Help</a>
           <button onClick={refresh} className="btn btn-secondary">↻ Refresh</button>
           <a href="/api/download" className="btn btn-primary">⤓ Download xlsx</a>
         </div>

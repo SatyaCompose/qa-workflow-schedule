@@ -22,6 +22,19 @@ export type TicketRow = {
   sprint: string | null;
 };
 
+export type PenaltyRow = {
+  id: number;
+  task_gid: string;
+  task_name: string | null;
+  task_url: string | null;
+  penalized_at: string;
+  penalized_date: string;
+  penalized_to: string;
+  penalized_to_gid: string;
+  priority: string;
+  reason: string;
+};
+
 export type CompletionRow = {
   id: number;
   task_gid: string;

@@ -117,3 +117,22 @@ create table if not exists completions (
 create index if not exists completions_by_idx          on completions (completed_by);
 create index if not exists completions_date_idx        on completions (completed_date);
 create index if not exists completions_completed_at_idx on completions (completed_at);
+
+-- Per-day P1 penalty: if a ticket is still in P1 (Deployed in Staging - QA to verify)
+-- when the IST working day ends (~22:00 IST), the assignee gets a -1 credit row.
+-- Unique on (task_gid, penalized_date) so we don't double-penalize within the day.
+create table if not exists penalties (
+  id               bigserial primary key,
+  task_gid         text        not null,
+  task_name        text,
+  task_url         text,
+  penalized_at     timestamptz not null default now(),
+  penalized_date   date        not null,
+  penalized_to     text        not null,
+  penalized_to_gid text        not null,
+  priority         text        not null,    -- usually 'P1'
+  reason           text        not null default 'unfinished_p1_eod',
+  unique (task_gid, penalized_date)
+);
+create index if not exists penalties_by_idx   on penalties (penalized_to);
+create index if not exists penalties_date_idx on penalties (penalized_date);

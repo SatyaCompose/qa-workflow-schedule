@@ -6,7 +6,7 @@ import {
 } from "./asana";
 import { config } from "./config";
 import { supabase } from "./db";
-import { istDateString } from "./ist";
+import { isWeekendIst, istDateString, istHour } from "./ist";
 import { computePriority, devStatusOf } from "./priority";
 import { splitWithStability } from "./splitter";
 
@@ -16,6 +16,7 @@ export type SyncResult = {
   seenCount: number;
   archivedCount: number;
   completionCount?: number;
+  penaltyCount?: number;
   error?: string;
 };
 
@@ -225,6 +226,33 @@ export async function runSync(): Promise<SyncResult> {
       if (error) throw error;
     }
 
+    // End-of-day penalty: any active P1 still open when IST clock is at 22+
+    // gets a -1 credit row for its current assignee. Unique constraint
+    // (task_gid, penalized_date) prevents double-penalizing in one day.
+    // Weekends are excluded — the team isn't expected to work then.
+    let penaltyCount = 0;
+    if (istHour() >= 22 && !isWeekendIst()) {
+      const p1Rows = upserts
+        .filter((u) => u.priority === "P1")
+        .map((u) => ({
+          task_gid: u.task_gid,
+          task_name: u.task_name,
+          task_url: u.task_url,
+          penalized_date: today,
+          penalized_to: u.assigned_to,
+          penalized_to_gid: u.assigned_to_gid,
+          priority: u.priority,
+          reason: "unfinished_p1_eod",
+        }));
+      if (p1Rows.length) {
+        const { count, error } = await db
+          .from("penalties")
+          .upsert(p1Rows, { onConflict: "task_gid,penalized_date", ignoreDuplicates: true, count: "exact" });
+        if (error) throw error;
+        penaltyCount = count ?? 0;
+      }
+    }
+
     const newCount = assignments.filter((a) => a.isNew).length;
     const seenCount = assignments.length;
 
@@ -241,7 +269,7 @@ export async function runSync(): Promise<SyncResult> {
         .eq("id", runId);
     }
 
-    return { ok: true, newCount, seenCount, archivedCount, completionCount: completions.length };
+    return { ok: true, newCount, seenCount, archivedCount, completionCount: completions.length, penaltyCount };
   } catch (err: any) {
     const msg = err?.message ?? String(err);
     if (runId) {
