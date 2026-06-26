@@ -55,9 +55,7 @@ function lastMonths(n: number): string[] {
   const months: string[] = [];
   for (let i = 0; i < n; i++) {
     const d = new Date(Date.UTC(istNow.getUTCFullYear(), istNow.getUTCMonth() - i, 1));
-    months.push(
-      `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`,
-    );
+    months.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`);
   }
   return months;
 }
@@ -72,28 +70,18 @@ function sprintRankOf(sprintName: string | null, sprintOrder: string[]): number 
 
 function makeComparator(sprintOrder: string[]) {
   return (a: Ticket, b: Ticket): number => {
-    // Older sprint always wins — even over a higher QA priority in a newer sprint.
     const sa = sprintRankOf(a.sprint, sprintOrder);
     const sb = sprintRankOf(b.sprint, sprintOrder);
     if (sa !== sb) return sa - sb;
-    // Within the same sprint: P1 → P4.
     const pa = PRIORITY_RANK[a.priority ?? "P4"] ?? 5;
     const pb = PRIORITY_RANK[b.priority ?? "P4"] ?? 5;
     if (pa !== pb) return pa - pb;
-    // Then: nearest due date first; null dues last.
     const da = a.due_on ? new Date(a.due_on).getTime() : Infinity;
     const db = b.due_on ? new Date(b.due_on).getTime() : Infinity;
     if (da !== db) return da - db;
     return a.first_seen.localeCompare(b.first_seen);
   };
 }
-
-const PRIORITY_STYLE: Record<string, { bg: string; fg: string }> = {
-  P1: { bg: "#fde2e2", fg: "#9b1c1c" },
-  P2: { bg: "#fef3c7", fg: "#92400e" },
-  P3: { bg: "#dbeafe", fg: "#1e3a8a" },
-  P4: { bg: "#f3f4f6", fg: "#374151" },
-};
 
 export default function Page() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
@@ -122,10 +110,7 @@ export default function Page() {
   const cmp = useMemo(() => makeComparator(sprintOrder), [sprintOrder]);
   const active = tickets.filter((t) => !t.archived).sort(cmp);
   const archived = tickets.filter((t) => t.archived).sort(cmp);
-  const byTarget = active.reduce<Record<string, number>>((acc, t) => {
-    acc[t.assigned_to] = (acc[t.assigned_to] ?? 0) + 1;
-    return acc;
-  }, {});
+
   const byPriority = active.reduce<Record<string, number>>((acc, t) => {
     const p = t.priority ?? "P4";
     acc[p] = (acc[p] ?? 0) + 1;
@@ -133,125 +118,180 @@ export default function Page() {
   }, {});
 
   return (
-    <main style={{ maxWidth: 1300, margin: "32px auto", padding: "0 16px" }}>
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-        <h1 style={{ margin: 0 }}>QA Work Allotment</h1>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <label style={{ fontSize: 13, color: "#555" }}>Month:</label>
-          <select
-            value={month}
-            onChange={(e) => setMonth(e.target.value)}
-            style={{ padding: "6px 8px", borderRadius: 6, border: "1px solid #ddd" }}
-          >
-            {monthOptions.map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
-          <a
-            href={`/api/download?month=${month}`}
-            style={{ background: "#111", color: "#fff", padding: "8px 14px", borderRadius: 8, textDecoration: "none", fontSize: 14 }}
-          >
-            Download {month}.xlsx
-          </a>
-        </div>
-      </header>
+    <main style={{ maxWidth: 1280, margin: "0 auto", padding: "32px 24px 64px" }}>
+      <Header
+        month={month}
+        monthOptions={monthOptions}
+        onMonthChange={setMonth}
+        lastRun={lastRun}
+      />
 
-      <section style={{ marginTop: 16, fontSize: 14, color: "#555" }}>
-        {lastRun ? (
-          <span>
-            Last sync: {new Date(lastRun.started_at).toLocaleString()} —{" "}
-            {lastRun.ok === true
-              ? `OK (seen ${lastRun.seen_count}, new ${lastRun.new_count}, archived ${lastRun.archived_count})`
-              : lastRun.ok === false
-              ? `FAILED: ${lastRun.error}`
-              : "running…"}
-          </span>
-        ) : (
-          <span>No syncs recorded yet.</span>
-        )}
-      </section>
-
-      <section style={{ marginTop: 24 }}>
-        <h2 style={{ fontSize: 18 }}>Team status</h2>
+      <Section title="Team status">
         <TeamStatusPanel team={team} onChanged={refresh} />
-      </section>
+      </Section>
 
-      <section style={{ marginTop: 24 }}>
-        <h2 style={{ fontSize: 18 }}>Active assignments ({active.length})</h2>
-
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
-          {(["P1", "P2", "P3", "P4"] as const).map((p) => (
-            <PriorityChip key={p} priority={p} count={byPriority[p] ?? 0} />
-          ))}
-        </div>
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
-          {Object.entries(byTarget).map(([name, count]) => (
-            <div key={name} style={{ background: "#fff", padding: "8px 14px", borderRadius: 8, border: "1px solid #e5e5e5" }}>
-              <strong>{name}</strong>: {count}
-            </div>
-          ))}
-        </div>
-
+      <Section
+        title={`Active assignments (${active.length})`}
+        right={<PriorityCounts byPriority={byPriority} />}
+      >
         <Table rows={active} targets={targets} loading={loading} onReassigned={refresh} canReassign />
-      </section>
+      </Section>
 
-      <section style={{ marginTop: 32 }}>
-        <h2 style={{ fontSize: 18 }}>Archived ({archived.length})</h2>
+      <Section title={`Archived (${archived.length})`}>
         <Table rows={archived} targets={targets} loading={loading} onReassigned={refresh} canReassign={false} />
-      </section>
+      </Section>
     </main>
   );
 }
 
-const STATUS_STYLE: Record<string, { bg: string; fg: string }> = {
-  available: { bg: "#dcfce7", fg: "#166534" },
-  regression: { bg: "#fef3c7", fg: "#92400e" },
-  leave: { bg: "#fee2e2", fg: "#991b1b" },
+function Header({
+  month, monthOptions, onMonthChange, lastRun,
+}: {
+  month: string;
+  monthOptions: string[];
+  onMonthChange: (m: string) => void;
+  lastRun: Run | null;
+}) {
+  return (
+    <header style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16, flexWrap: "wrap", marginBottom: 24 }}>
+      <div>
+        <h1 style={{ margin: 0, fontSize: 28, fontWeight: 700, letterSpacing: "-0.02em" }}>
+          QA Work Allotment
+        </h1>
+        <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--text-3)" }}>
+          {lastRun ? (
+            <>
+              Last sync {new Date(lastRun.started_at).toLocaleString()} ·{" "}
+              <span style={{ color: lastRun.ok === true ? "#15803d" : lastRun.ok === false ? "#b91c1c" : "var(--text-3)" }}>
+                {lastRun.ok === true
+                  ? `OK · seen ${lastRun.seen_count} · new ${lastRun.new_count} · archived ${lastRun.archived_count}`
+                  : lastRun.ok === false
+                  ? `Failed: ${lastRun.error}`
+                  : "running…"}
+              </span>
+            </>
+          ) : (
+            "No syncs recorded yet."
+          )}
+        </p>
+      </div>
+      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <select
+          value={month}
+          onChange={(e) => onMonthChange(e.target.value)}
+          className="qa-select"
+        >
+          {monthOptions.map((m) => (<option key={m} value={m}>{m}</option>))}
+        </select>
+        <a href={`/api/download?month=${month}`} className="btn btn-primary">
+          ⤓ Download {month}.xlsx
+        </a>
+      </div>
+    </header>
+  );
+}
+
+function Section({ title, right, children }: { title: string; right?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <section style={{ marginTop: 32 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 16, flexWrap: "wrap" }}>
+        <h2 className="section-title" style={{ margin: 0 }}>{title}</h2>
+        {right && <div>{right}</div>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function PriorityCounts({ byPriority }: { byPriority: Record<string, number> }) {
+  return (
+    <div style={{ display: "flex", gap: 8 }}>
+      {(["P1", "P2", "P3", "P4"] as const).map((p) => (
+        <div key={p} className={`badge badge-${p.toLowerCase()}`} style={{ padding: "4px 10px", fontSize: 12 }}>
+          {p}: {byPriority[p] ?? 0}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const STATUS_STYLE: Record<string, { bg: string; fg: string; border: string }> = {
+  available:  { bg: "#dcfce7", fg: "#166534", border: "#bbf7d0" },
+  regression: { bg: "#fef3c7", fg: "#854d0e", border: "#fde68a" },
+  leave:      { bg: "#fee2e2", fg: "#991b1b", border: "#fecaca" },
 };
 
 function TeamStatusPanel({ team, onChanged }: { team: TeamMember[]; onChanged: () => void }) {
   const [editing, setEditing] = useState<string | null>(null);
 
-  if (team.length === 0) return null;
+  if (team.length === 0) return <p className="muted">No team configured.</p>;
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12, marginBottom: 16 }}>
-      {team.map((m) => {
-        const s = STATUS_STYLE[m.status] ?? STATUS_STYLE.available;
-        const usePct = m.capacity > 0 ? Math.min(100, Math.round((m.active / m.capacity) * 100)) : 0;
-        return (
-          <div key={m.name} style={{ background: "#fff", border: "1px solid #e5e5e5", borderRadius: 8, padding: 12 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <strong>{m.name}</strong>
-              <span style={{ background: s.bg, color: s.fg, padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 700 }}>
-                {m.status}
-              </span>
+    <>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14 }}>
+        {team.map((m) => {
+          const s = STATUS_STYLE[m.status] ?? STATUS_STYLE.available;
+          const usePct = m.capacity > 0 ? Math.min(100, Math.round((m.active / m.capacity) * 100)) : 0;
+          const barClass = usePct >= 100 ? "bar-danger" : usePct >= 80 ? "bar-warn" : "bar-ok";
+          return (
+            <div key={m.name} className="card" style={{ padding: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ fontWeight: 600, fontSize: 15 }}>{m.name}</div>
+                <span style={{ background: s.bg, color: s.fg, border: `1px solid ${s.border}`, padding: "2px 10px", borderRadius: 999, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                  {m.status}
+                </span>
+              </div>
+              <div style={{ marginTop: 4, fontSize: 12, color: "var(--text-3)" }}>
+                {m.hours}h · capacity {m.capacity} tickets
+              </div>
+
+              <div className="bar" style={{ marginTop: 12 }}>
+                <span className={barClass} style={{ width: `${usePct}%` }} />
+              </div>
+              <div style={{ marginTop: 4, display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-3)" }}>
+                <span>{m.active} / {m.capacity}</span>
+                <span>{usePct}%</span>
+              </div>
+
+              <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, textAlign: "center" }}>
+                <Stat label="Today" value={m.completedToday} />
+                <Stat label="Month" value={m.completedMonth} />
+                <Stat label="Total" value={m.completedTotal} />
+              </div>
+
+              {m.notes && (
+                <div style={{ marginTop: 10, padding: "8px 10px", background: "#fafafa", borderRadius: 6, fontSize: 12, color: "var(--text-2)", fontStyle: "italic" }}>
+                  {m.notes}
+                </div>
+              )}
+
+              <button
+                onClick={() => setEditing(m.name)}
+                className="btn btn-secondary"
+                style={{ marginTop: 12, width: "100%", justifyContent: "center" }}
+              >
+                Edit
+              </button>
             </div>
-            <div style={{ fontSize: 12, color: "#666", marginTop: 6 }}>
-              {m.hours}h available · capacity {m.capacity} tickets
-            </div>
-            <div style={{ marginTop: 8, background: "#f3f4f6", borderRadius: 4, height: 6, overflow: "hidden" }}>
-              <div style={{ width: `${usePct}%`, height: "100%", background: usePct >= 100 ? "#dc2626" : usePct >= 80 ? "#f59e0b" : "#10b981" }} />
-            </div>
-            <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>
-              {m.active} active / {m.capacity} cap ({usePct}%)
-            </div>
-            <div style={{ fontSize: 12, color: "#374151", marginTop: 8, display: "flex", gap: 12 }}>
-              <span>✓ today: <b>{m.completedToday}</b></span>
-              <span>this month: <b>{m.completedMonth}</b></span>
-              <span>total: <b>{m.completedTotal}</b></span>
-            </div>
-            {m.notes && <div style={{ fontSize: 12, color: "#777", marginTop: 6, fontStyle: "italic" }}>{m.notes}</div>}
-            <button
-              onClick={() => setEditing(m.name)}
-              style={{ marginTop: 10, background: "#111", color: "#fff", border: 0, padding: "6px 10px", borderRadius: 6, fontSize: 12, cursor: "pointer" }}
-            >
-              Edit status
-            </button>
-          </div>
-        );
-      })}
-      {editing && <StatusEditor member={team.find((m) => m.name === editing)!} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); onChanged(); }} />}
+          );
+        })}
+      </div>
+      {editing && (
+        <StatusEditor
+          member={team.find((m) => m.name === editing)!}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); onChanged(); }}
+        />
+      )}
+    </>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: number }) {
+  return (
+    <div style={{ background: "#fafbfc", border: "1px solid var(--border)", borderRadius: 8, padding: "8px 4px" }}>
+      <div style={{ fontSize: 18, fontWeight: 700, lineHeight: 1.1 }}>{value}</div>
+      <div style={{ fontSize: 10, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: "0.06em", marginTop: 2 }}>{label}</div>
     </div>
   );
 }
@@ -286,53 +326,67 @@ function StatusEditor({
   };
 
   return (
-    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 8, padding: 20, width: 360, maxWidth: "90vw" }}>
-        <h3 style={{ margin: "0 0 12px" }}>Edit: {member.name}</h3>
-        <label style={{ display: "block", fontSize: 13, marginBottom: 4 }}>Status</label>
-        <select value={status} onChange={(e) => {
-          const v = e.target.value as TeamMember["status"];
-          setStatus(v);
-          if (v === "leave") setHours(0);
-          else if (v === "available") setHours(8);
-        }} style={{ width: "100%", padding: 8, borderRadius: 6, border: "1px solid #ddd", marginBottom: 12 }}>
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15, 23, 42, 0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card" style={{ padding: 24, width: 400, maxWidth: "100%", boxShadow: "0 20px 40px rgba(0,0,0,0.2)" }}>
+        <h3 style={{ margin: "0 0 4px", fontSize: 18, fontWeight: 600 }}>Edit {member.name}</h3>
+        <p style={{ margin: "0 0 16px", fontSize: 13, color: "var(--text-3)" }}>Update availability and capacity</p>
+
+        <Label>Status</Label>
+        <select
+          value={status}
+          onChange={(e) => {
+            const v = e.target.value as TeamMember["status"];
+            setStatus(v);
+            if (v === "leave") setHours(0);
+            else if (v === "available") setHours(8);
+          }}
+          className="qa-select"
+          style={{ width: "100%", marginBottom: 14 }}
+        >
           <option value="available">Available</option>
           <option value="regression">Regression</option>
           <option value="leave">Leave</option>
         </select>
-        <label style={{ display: "block", fontSize: 13, marginBottom: 4 }}>Hours available (0–8)</label>
-        <input type="number" min={0} max={8} value={hours} onChange={(e) => setHours(parseInt(e.target.value || "0", 10))}
-               disabled={status === "leave" || status === "available"}
-               style={{ width: "100%", padding: 8, borderRadius: 6, border: "1px solid #ddd", marginBottom: 12 }} />
-        <label style={{ display: "block", fontSize: 13, marginBottom: 4 }}>Notes (optional)</label>
-        <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
-                  style={{ width: "100%", padding: 8, borderRadius: 6, border: "1px solid #ddd", marginBottom: 12, resize: "vertical" }} />
-        {error && <div style={{ color: "#c00", fontSize: 12, marginBottom: 8 }}>{error}</div>}
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-          <button onClick={onClose} disabled={saving} style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>Cancel</button>
-          <button onClick={save} disabled={saving} style={{ padding: "8px 14px", borderRadius: 6, border: 0, background: "#111", color: "#fff", cursor: "pointer" }}>{saving ? "Saving…" : "Save"}</button>
+
+        <Label>Hours available (0–8)</Label>
+        <input
+          type="number" min={0} max={8} value={hours}
+          onChange={(e) => setHours(parseInt(e.target.value || "0", 10))}
+          disabled={status === "leave" || status === "available"}
+          style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border-strong)", marginBottom: 14, fontSize: 14 }}
+        />
+
+        <Label>Notes (optional)</Label>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          rows={2}
+          placeholder="e.g. Half day, doctor's appointment"
+          style={{ width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid var(--border-strong)", marginBottom: 14, fontSize: 14, resize: "vertical" }}
+        />
+
+        {error && (
+          <div style={{ background: "#fef2f2", border: "1px solid #fecaca", color: "#991b1b", padding: "8px 12px", borderRadius: 8, fontSize: 13, marginBottom: 12 }}>
+            {error}
+          </div>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
+          <button onClick={onClose} disabled={saving} className="btn btn-secondary">Cancel</button>
+          <button onClick={save} disabled={saving} className="btn btn-primary">
+            {saving ? "Saving…" : "Save changes"}
+          </button>
         </div>
       </div>
     </div>
   );
 }
 
-function PriorityChip({ priority, count }: { priority: "P1" | "P2" | "P3" | "P4"; count: number }) {
-  const s = PRIORITY_STYLE[priority];
+function Label({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ background: s.bg, color: s.fg, padding: "8px 14px", borderRadius: 8, fontWeight: 600 }}>
-      {priority}: {count}
-    </div>
-  );
-}
-
-function PriorityBadge({ priority }: { priority: Priority }) {
-  const p = priority ?? "P4";
-  const s = PRIORITY_STYLE[p];
-  return (
-    <span style={{ background: s.bg, color: s.fg, padding: "2px 8px", borderRadius: 4, fontSize: 12, fontWeight: 700 }}>
-      {p}
-    </span>
+    <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--text-2)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+      {children}
+    </label>
   );
 }
 
@@ -341,30 +395,31 @@ function Table({
 }: {
   rows: Ticket[]; targets: Target[]; loading: boolean; onReassigned: () => void; canReassign: boolean;
 }) {
-  if (loading) return <p>Loading…</p>;
-  if (rows.length === 0) return <p style={{ color: "#666" }}>No tickets.</p>;
+  if (loading) return <p className="muted">Loading…</p>;
+  if (rows.length === 0) return <p className="muted">No tickets.</p>;
   return (
-    <div style={{ overflowX: "auto", background: "#fff", borderRadius: 8, border: "1px solid #e5e5e5" }}>
-      <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 14 }}>
-        <thead style={{ background: "#fafafa" }}>
-          <tr>
-            <Th>Pri</Th>
-            <Th>Task</Th>
-            <Th>Dev Status</Th>
-            <Th>Assigned To</Th>
-            <Th>Original</Th>
-            <Th>Sprint</Th>
-            <Th>Due</Th>
-            <Th>First Seen</Th>
-            {canReassign && <Th>Reassign</Th>}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((t) => (
-            <Row key={t.task_gid} t={t} targets={targets} canReassign={canReassign} onReassigned={onReassigned} />
-          ))}
-        </tbody>
-      </table>
+    <div className="table-wrap">
+      <div style={{ overflowX: "auto" }}>
+        <table className="qa">
+          <thead>
+            <tr>
+              <th style={{ width: 56 }}>Pri</th>
+              <th>Task</th>
+              <th style={{ width: 200 }}>Dev Status</th>
+              <th style={{ width: 140 }}>Assigned</th>
+              <th style={{ width: 140 }}>Original</th>
+              <th style={{ width: 100 }}>Sprint</th>
+              <th style={{ width: 100 }}>Due</th>
+              {canReassign && <th style={{ width: 160 }}>Reassign</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((t) => (
+              <Row key={t.task_gid} t={t} targets={targets} canReassign={canReassign} onReassigned={onReassigned} />
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -388,14 +443,11 @@ function Row({
         credentials: "include",
         body: JSON.stringify({ task_gid: t.task_gid, target_gid }),
       });
-      if (res.status === 401) {
-        setError("Auth required — refresh and try again.");
-      } else if (!res.ok) {
+      if (res.status === 401) setError("Auth required.");
+      else if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         setError(body.error ?? `HTTP ${res.status}`);
-      } else {
-        onReassigned();
-      }
+      } else onReassigned();
     } catch (e: any) {
       setError(e?.message ?? "Network error");
     } finally {
@@ -403,51 +455,60 @@ function Row({
     }
   };
 
+  const p = t.priority ?? "P4";
+
   return (
-    <tr style={{ borderTop: "1px solid #eee", opacity: pending ? 0.5 : 1 }}>
-      <Td><PriorityBadge priority={t.priority} /></Td>
-      <Td>
-        {t.task_url ? (
-          <a href={t.task_url} target="_blank" rel="noreferrer">{t.task_name}</a>
+    <tr style={{ opacity: pending ? 0.5 : 1 }}>
+      <td>
+        <span className={`badge badge-${p.toLowerCase()}`}>{p}</span>
+      </td>
+      <td>
+        <div style={{ fontWeight: 500, lineHeight: 1.35 }}>
+          {t.task_url ? (
+            <a href={t.task_url} target="_blank" rel="noreferrer">{t.task_name}</a>
+          ) : (
+            t.task_name
+          )}
+        </div>
+        <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 2 }}>
+          first seen {new Date(t.first_seen).toLocaleDateString()}
+        </div>
+      </td>
+      <td style={{ color: "var(--text-2)" }}>{t.dev_status ?? "—"}</td>
+      <td>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <span style={{ fontWeight: 500 }}>{t.assigned_to}</span>
+          {t.manual_override && (
+            <span className="badge" style={{ background: "#fff7d6", color: "#854d0e", borderColor: "#fde68a", fontSize: 10 }}>
+              manual
+            </span>
+          )}
+        </div>
+      </td>
+      <td style={{ color: "var(--text-2)" }}>{t.original_assignee ?? "—"}</td>
+      <td>
+        {t.sprint ? (
+          <span className="chip" style={{ padding: "2px 8px", fontSize: 11 }}>{t.sprint}</span>
         ) : (
-          t.task_name
+          <span className="muted">—</span>
         )}
-      </Td>
-      <Td style={{ color: "#555", fontSize: 13 }}>{t.dev_status ?? "—"}</Td>
-      <Td>
-        {t.assigned_to}
-        {t.manual_override && (
-          <span style={{ marginLeft: 6, fontSize: 11, color: "#a67500", background: "#fff7d6", padding: "1px 6px", borderRadius: 4 }}>
-            manual
-          </span>
-        )}
-      </Td>
-      <Td>{t.original_assignee ?? "—"}</Td>
-      <Td style={{ color: "#555", fontSize: 13 }}>{t.sprint ?? "—"}</Td>
-      <Td>{t.due_on ?? "—"}</Td>
-      <Td>{new Date(t.first_seen).toLocaleDateString()}</Td>
+      </td>
+      <td style={{ color: "var(--text-2)" }}>{t.due_on ?? "—"}</td>
       {canReassign && (
-        <Td>
+        <td>
           <select
             value={t.assigned_to_gid}
             disabled={pending}
             onChange={(e) => reassign(e.target.value)}
-            style={{ padding: "4px 6px", borderRadius: 6, border: "1px solid #ddd", fontSize: 13 }}
+            className="qa-select"
           >
             {targets.map((tg) => (
               <option key={tg.gid} value={tg.gid}>{tg.name}</option>
             ))}
           </select>
-          {error && <div style={{ color: "#c00", fontSize: 12, marginTop: 4 }}>{error}</div>}
-        </Td>
+          {error && <div style={{ color: "#b91c1c", fontSize: 11, marginTop: 4 }}>{error}</div>}
+        </td>
       )}
     </tr>
   );
-}
-
-function Th({ children }: { children: React.ReactNode }) {
-  return <th style={{ textAlign: "left", padding: "10px 12px", fontWeight: 600 }}>{children}</th>;
-}
-function Td({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
-  return <td style={{ padding: "10px 12px", verticalAlign: "top", ...style }}>{children}</td>;
 }
