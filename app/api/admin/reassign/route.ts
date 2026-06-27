@@ -2,11 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { config } from "@/lib/config";
 import { supabase } from "@/lib/db";
 import { istDateString } from "@/lib/ist";
+import { requireSameOrigin } from "@/lib/origin";
 import { loadStatuses } from "@/lib/target-status";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
+  const originErr = requireSameOrigin(req);
+  if (originErr) return originErr;
+
   let body: { task_gid?: string; target_gid?: string };
   try {
     body = await req.json();

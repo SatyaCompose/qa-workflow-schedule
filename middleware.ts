@@ -1,15 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 
-// Protect /api/admin/* with HTTP Basic Auth. The browser prompts the user
-// on first request and remembers the credentials for the session.
+// Gate the whole app behind HTTP Basic Auth using ADMIN_PASSWORD. The
+// dashboard pages and JSON APIs all expose the same data and the same
+// reassign / status-edit controls, so there's no useful "viewer" tier to
+// carve out — anyone with the dashboard URL effectively has admin.
 //
-// Note on the username: we deliberately ignore it. Only the password (the
-// part after the first ':') is checked against ADMIN_PASSWORD. Users can
-// type anything in the username field (or leave it blank).
+// Exempted paths:
+//   - /api/cron/*  uses CRON_SECRET (Bearer token), checked in the route.
+//   - Next.js static assets (/_next, favicon) are excluded via `matcher`.
 //
-// We use timingSafeEqual to compare so that a wrong password can't leak
-// information about how close it was via response-time differences.
+// Only the password (the part after the first ':') is compared — users can
+// type anything as the username. constantTimeEqual avoids leaking length /
+// match progress via response timing.
 export function middleware(req: NextRequest) {
+  const { pathname } = req.nextUrl;
+
+  if (pathname.startsWith("/api/cron")) {
+    return NextResponse.next();
+  }
+
   const adminPw = process.env.ADMIN_PASSWORD;
   if (!adminPw) {
     return NextResponse.json(
@@ -30,7 +39,7 @@ export function middleware(req: NextRequest) {
 
   return new NextResponse("Authentication required", {
     status: 401,
-    headers: { "WWW-Authenticate": 'Basic realm="QA Work Allotment Admin"' },
+    headers: { "WWW-Authenticate": 'Basic realm="QA Work Allotment"' },
   });
 }
 
@@ -47,6 +56,9 @@ function constantTimeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+// Match every request except Next.js static assets and the favicon.
+// /api/cron is still matched (we handle the bypass above) so that a
+// misconfiguration there can't accidentally expose other routes.
 export const config = {
-  matcher: ["/api/admin/:path*"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };

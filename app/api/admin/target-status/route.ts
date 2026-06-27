@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { config } from "@/lib/config";
 import { supabase } from "@/lib/db";
+import { requireSameOrigin } from "@/lib/origin";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +13,9 @@ type Body = {
 };
 
 export async function POST(req: NextRequest) {
+  const originErr = requireSameOrigin(req);
+  if (originErr) return originErr;
+
   let body: Body;
   try {
     body = await req.json();
@@ -24,14 +29,33 @@ export async function POST(req: NextRequest) {
   const notes = body.notes ?? null;
 
   if (!name) return NextResponse.json({ error: "name is required" }, { status: 400 });
+
+  // Only configured TARGET_USERS can have a status row — otherwise the table
+  // accumulates dead entries that nothing reads.
+  let allowedNames: string[];
+  try {
+    allowedNames = config().targets.map((t) => t.name);
+  } catch (e) {
+    return NextResponse.json(
+      { error: `Server config invalid: ${(e as Error).message}` },
+      { status: 500 },
+    );
+  }
+  if (!allowedNames.includes(name)) {
+    return NextResponse.json(
+      { error: `'${name}' is not in TARGET_USERS` },
+      { status: 400 },
+    );
+  }
+
   if (!status || !["available", "regression", "leave"].includes(status)) {
     return NextResponse.json({ error: "status must be available|regression|leave" }, { status: 400 });
   }
-  if (typeof hours !== "number" || hours < 0 || hours > 8) {
-    // auto-set sensible default for status if hours wasn't sent
+  if (typeof hours !== "number" || !Number.isInteger(hours) || hours < 0 || hours > 8) {
+    // auto-set sensible default for status if hours wasn't sent (or is bad)
     if (status === "leave") hours = 0;
     else if (status === "available") hours = 8;
-    else return NextResponse.json({ error: "hours must be 0..8" }, { status: 400 });
+    else return NextResponse.json({ error: "hours must be an integer 0..8" }, { status: 400 });
   }
 
   // Force hours to match status for the non-ambiguous cases.
