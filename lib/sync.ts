@@ -253,16 +253,30 @@ export async function runSync(): Promise<SyncResult> {
         sprint: t.sprint,
       }));
     if (archiveCompletions.length) {
-      // Unique partial index (task_gid, completed_date) WHERE to_priority IS NULL
-      // dedupes archive credits on re-runs / re-archives. Other completion types
-      // (P→P transitions) intentionally aren't deduped.
-      const { error } = await db
+      // Dedupe archive credits manually: the unique partial index
+      // (task_gid, completed_date) WHERE to_priority IS NULL can't be
+      // targeted by PostgREST's `upsert(..., onConflict: ...)` because
+      // PostgREST doesn't transmit the WHERE predicate, so Postgres reports
+      // "no unique or exclusion constraint matching the ON CONFLICT
+      // specification". Read existing archive rows for today + these gids
+      // and insert only the missing ones. The partial index still enforces
+      // uniqueness at write time as a race-safety net.
+      const candidateGids = archiveCompletions.map((c) => c.task_gid);
+      const { data: existingArchive, error: existingErr } = await db
         .from("completions")
-        .upsert(archiveCompletions, {
-          onConflict: "task_gid,completed_date",
-          ignoreDuplicates: true,
-        });
-      if (error) throw error;
+        .select("task_gid")
+        .eq("completed_date", today)
+        .is("to_priority", null)
+        .in("task_gid", candidateGids);
+      if (existingErr) throw existingErr;
+      const existingSet = new Set((existingArchive ?? []).map((r) => r.task_gid));
+      const toInsertArchive = archiveCompletions.filter(
+        (c) => !existingSet.has(c.task_gid),
+      );
+      if (toInsertArchive.length) {
+        const { error } = await db.from("completions").insert(toInsertArchive);
+        if (error) throw error;
+      }
     }
 
     let archivedCount = 0;
