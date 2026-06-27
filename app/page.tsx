@@ -132,6 +132,38 @@ export default function Page() {
   );
 }
 
+// A sync_run with ok=null and started_at older than this is treated as
+// stalled (process killed mid-run). Avoids the dashboard showing "running…"
+// forever.
+const STALE_RUN_MS = 5 * 60 * 1000;
+
+function LastRunLine({ lastRun }: { lastRun: Run | null }) {
+  if (!lastRun) return <span>No syncs recorded yet.</span>;
+  const startedMs = new Date(lastRun.started_at).getTime();
+  const isStale = lastRun.ok === null && Date.now() - startedMs > STALE_RUN_MS;
+  let detail: string;
+  let color = "var(--text-3)";
+  if (lastRun.ok === true) {
+    detail = `OK (seen ${lastRun.seen_count}, new ${lastRun.new_count}, archived ${lastRun.archived_count})`;
+    color = "#15803d";
+  } else if (lastRun.ok === false) {
+    detail = `FAILED: ${lastRun.error}`;
+    color = "#b91c1c";
+  } else if (isStale) {
+    const mins = Math.round((Date.now() - startedMs) / 60_000);
+    detail = `STALLED (${mins}m without completion — likely process killed)`;
+    color = "#b91c1c";
+  } else {
+    detail = "running…";
+  }
+  return (
+    <span>
+      Last sync: {new Date(lastRun.started_at).toLocaleString()} —{" "}
+      <span style={{ color }}>{detail}</span>
+    </span>
+  );
+}
+
 function Header({ lastRun }: { lastRun: Run | null }) {
   return (
     <header className="dashboard-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16, flexWrap: "wrap", marginBottom: 24 }}>
@@ -140,20 +172,7 @@ function Header({ lastRun }: { lastRun: Run | null }) {
           QA Work Allotment
         </h1>
         <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--text-3)" }}>
-          {lastRun ? (
-            <>
-              Last sync {new Date(lastRun.started_at).toLocaleString()} ·{" "}
-              <span style={{ color: lastRun.ok === true ? "#15803d" : lastRun.ok === false ? "#b91c1c" : "var(--text-3)" }}>
-                {lastRun.ok === true
-                  ? `OK · seen ${lastRun.seen_count} · new ${lastRun.new_count} · archived ${lastRun.archived_count}`
-                  : lastRun.ok === false
-                  ? `Failed: ${lastRun.error}`
-                  : "running…"}
-              </span>
-            </>
-          ) : (
-            "No syncs recorded yet."
-          )}
+          <LastRunLine lastRun={lastRun} />
         </p>
       </div>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>

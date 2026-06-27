@@ -97,6 +97,19 @@ export default function HelpPage() {
         </p>
       </Card>
 
+      <Card title="Archive = also a credit (when it applies)">
+        <p>
+          If a ticket was in P1/P2/P3 (a QA-verify state) when it leaves our scope —
+          e.g. someone reassigns it away in Asana, or it moves to a non-tracked sprint —
+          the QA who held it last gets <b>+1 credit</b>. The reasoning: the ticket only
+          left scope because QA finished with it and someone took the next step.
+        </p>
+        <p>
+          A ticket that was P4 (not yet in QA hands) when it left scope earns
+          no credit — there's no evidence QA worked on it.
+        </p>
+      </Card>
+
       <Card title="Penalties = −1 credit">
         <p>
           If a <b>P1</b> ticket is still open (in <i>"Deployed in Staging - QA to verify"</i>) at
@@ -109,6 +122,28 @@ export default function HelpPage() {
           penalties fire on weekends.
         </p>
         <p>P2 and P3 don't trigger penalties — only P1.</p>
+        <p>
+          <b>Recovery:</b> if the 22:00 IST sync misses (cron drift, outage),
+          the next morning's sync back-fills the penalty against yesterday's
+          snapshot. So you can't dodge a penalty by killing the cron.
+        </p>
+      </Card>
+
+      <Card title="Reliability rules">
+        <ul>
+          <li><b>Concurrent syncs</b> are detected. If a sync is already running, a second one bails out instead of corrupting state.</li>
+          <li><b>Stalled syncs</b> are auto-detected. If a process is killed mid-sync, the next sync (or the dashboard, after 5 minutes) marks it as stalled rather than showing "running…" forever.</li>
+          <li><b>Snapshot rewrite</b> is crash-safe: today's rows are upserted before the cleanup delete, so today's tab in Excel is never empty if a sync errors halfway.</li>
+          <li><b>Archive credit</b> never double-counts a ticket on the same day, even if it re-enters and re-leaves scope.</li>
+        </ul>
+      </Card>
+
+      <Card title="What you can't do (with reasons)">
+        <ul>
+          <li><b>Reassign to someone on leave</b> — the API returns 400. Change their status first, or pick someone else.</li>
+          <li><b>Set TARGET_USERS with a non-numeric Asana GID</b> — the app refuses to start. Use either <code>Name</code> or <code>Name:numeric_gid</code>.</li>
+          <li><b>Hit the cron endpoint without CRON_SECRET</b> — fail-closed. The endpoint returns 500 if the env var isn't set, instead of being publicly accessible.</li>
+        </ul>
       </Card>
 
       <Card title="Archived = can't be tested right now">

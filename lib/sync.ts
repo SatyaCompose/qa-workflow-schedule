@@ -6,7 +6,7 @@ import {
 } from "./asana";
 import { config } from "./config";
 import { supabase } from "./db";
-import { isWeekendIst, istDateString, istHour } from "./ist";
+import { isWeekendIst, istDateString, istDayOfWeek, istHour, istYesterdayString } from "./ist";
 import { computePriority, devStatusOf } from "./priority";
 import { splitWithStability } from "./splitter";
 
@@ -17,19 +17,70 @@ export type SyncResult = {
   archivedCount: number;
   completionCount?: number;
   penaltyCount?: number;
+  skipped?: string;
   error?: string;
 };
 
 const QA_PRIORITIES = new Set(["P1", "P2", "P3"]);
 
+// A sync_runs row with finished_at = null older than this is considered stale
+// (process crashed / Vercel timeout / GH Actions cancelled mid-run).
+const STALE_RUN_MS = 5 * 60 * 1000;
+
 export async function runSync(): Promise<SyncResult> {
   const db = supabase();
-  const { data: runRow } = await db
+  const staleCutoff = new Date(Date.now() - STALE_RUN_MS).toISOString();
+
+  // (a) Sweep stuck runs: anything still unfinished after 5 minutes is dead.
+  await db
+    .from("sync_runs")
+    .update({
+      finished_at: new Date().toISOString(),
+      ok: false,
+      error: "stalled (no completion within 5 minutes)",
+    })
+    .is("finished_at", null)
+    .lt("started_at", staleCutoff);
+
+  // (b) Insert our own row first, then check whether another in-flight row
+  // exists. Not fully atomic (no advisory lock available via PostgREST), but
+  // closes the most common races: two cron triggers, or local sync racing
+  // with a deployed cron.
+  const { data: runRow, error: runRowErr } = await db
     .from("sync_runs")
     .insert({})
     .select("id")
     .single();
-  const runId = runRow?.id;
+  if (runRowErr) {
+    return { ok: false, newCount: 0, seenCount: 0, archivedCount: 0, error: runRowErr.message };
+  }
+  const runId = runRow.id;
+
+  const { data: others } = await db
+    .from("sync_runs")
+    .select("id")
+    .is("finished_at", null)
+    .gte("started_at", staleCutoff)
+    .neq("id", runId)
+    .limit(1);
+
+  if (others && others.length > 0) {
+    await db
+      .from("sync_runs")
+      .update({
+        finished_at: new Date().toISOString(),
+        ok: false,
+        error: `skipped: another sync in progress (id=${others[0].id})`,
+      })
+      .eq("id", runId);
+    return {
+      ok: true,
+      newCount: 0,
+      seenCount: 0,
+      archivedCount: 0,
+      skipped: `another sync in progress (id=${others[0].id})`,
+    };
+  }
 
   try {
     const { workspaceGid, source, sprintPrefixes, targets } = config();
@@ -60,8 +111,6 @@ export async function runSync(): Promise<SyncResult> {
     //   primary:  sprint age (older sprint first per ASANA_SPRINTS order)
     //   secondary: QA priority (P1 before P2 before P3 before P4)
     //   tertiary:  task gid (deterministic tiebreak)
-    // The splitter's load balancer assigns in this order, so P1s of the
-    // oldest sprint are distributed across the team FIRST, then P2s, etc.
     const PRIORITY_RANK: Record<string, number> = { P1: 1, P2: 2, P3: 3, P4: 4 };
     const sprintRank = (s: string | null) => {
       if (!s) return sprintPrefixes.length + 1;
@@ -114,10 +163,7 @@ export async function runSync(): Promise<SyncResult> {
       const sprint = sprintByGid.get(a.task.gid) ?? null;
 
       // Credit the prior assignee whenever a ticket's priority CHANGES away
-      // from a QA-verify state (P1/P2/P3). Catching ANY change (not just
-      // exits to P4) means a single ticket tested in Preview → UAT → Staging
-      // on the same day counts 3 separate completions, even if syncs miss
-      // the brief intermediate "Ready for ..." (P4) state between phases.
+      // from a QA-verify state (P1/P2/P3).
       const prev = priorById.get(a.task.gid);
       if (
         prev &&
@@ -176,11 +222,7 @@ export async function runSync(): Promise<SyncResult> {
 
     const seenGids = upserts.map((u) => u.task_gid);
 
-    // Before archiving, find which tickets are *about* to be archived.
-    // If any of them was in a QA-verify priority (P1/P2/P3), credit the
-    // current assignee — they almost certainly finished their verification
-    // and the ticket then left scope (reassigned away, moved out of sprint,
-    // completed in Asana, etc.). Without this, the credit is silently lost.
+    // Pre-archive: credit any ticket leaving scope that was in a QA-verify state.
     const buildToArchiveQuery = () => {
       let q = db
         .from("tickets")
@@ -205,13 +247,21 @@ export async function runSync(): Promise<SyncResult> {
         completed_by: t.assigned_to,
         completed_by_gid: t.assigned_to_gid,
         from_priority: t.priority,
-        to_priority: null,           // null = ticket exited scope
+        to_priority: null,
         from_dev_status: t.dev_status,
         to_dev_status: null,
         sprint: t.sprint,
       }));
     if (archiveCompletions.length) {
-      const { error } = await db.from("completions").insert(archiveCompletions);
+      // Unique partial index (task_gid, completed_date) WHERE to_priority IS NULL
+      // dedupes archive credits on re-runs / re-archives. Other completion types
+      // (P→P transitions) intentionally aren't deduped.
+      const { error } = await db
+        .from("completions")
+        .upsert(archiveCompletions, {
+          onConflict: "task_gid,completed_date",
+          ignoreDuplicates: true,
+        });
       if (error) throw error;
     }
 
@@ -239,15 +289,10 @@ export async function runSync(): Promise<SyncResult> {
       archivedCount = count ?? 0;
     }
 
-    // Rewrite today's snapshot.
-    {
-      const { error } = await db
-        .from("daily_snapshots")
-        .delete()
-        .eq("snapshot_date", today);
-      if (error) throw error;
-    }
-    if (assignments.length) {
+    // Rewrite today's snapshot — upsert current rows first (so they're
+    // visible even if delete fails), then delete leftovers from today that
+    // we didn't see this sync. Crash-safer than the old delete-then-insert.
+    if (upserts.length) {
       const snapshotRows = upserts.map((u) => ({
         snapshot_date: today,
         task_gid: u.task_gid,
@@ -262,14 +307,22 @@ export async function runSync(): Promise<SyncResult> {
         dev_status: u.dev_status,
         sprint: u.sprint,
       }));
-      const { error } = await db.from("daily_snapshots").insert(snapshotRows);
+      const { error } = await db.from("daily_snapshots").upsert(snapshotRows, {
+        onConflict: "snapshot_date,task_gid",
+        ignoreDuplicates: false,
+      });
+      if (error) throw error;
+    }
+    {
+      let q = db.from("daily_snapshots").delete().eq("snapshot_date", today);
+      if (seenGids.length) {
+        q = q.not("task_gid", "in", `(${seenGids.map((g) => `"${g}"`).join(",")})`);
+      }
+      const { error } = await q;
       if (error) throw error;
     }
 
-    // End-of-day penalty: any active P1 still open when IST clock is at 22+
-    // gets a -1 credit row for its current assignee. Unique constraint
-    // (task_gid, penalized_date) prevents double-penalizing in one day.
-    // Weekends are excluded — the team isn't expected to work then.
+    // End-of-day penalty for today (weekdays only, IST hour ≥ 22).
     let penaltyCount = 0;
     if (istHour() >= 22 && !isWeekendIst()) {
       const p1Rows = upserts
@@ -287,9 +340,50 @@ export async function runSync(): Promise<SyncResult> {
       if (p1Rows.length) {
         const { count, error } = await db
           .from("penalties")
-          .upsert(p1Rows, { onConflict: "task_gid,penalized_date", ignoreDuplicates: true, count: "exact" });
+          .upsert(p1Rows, {
+            onConflict: "task_gid,penalized_date",
+            ignoreDuplicates: true,
+            count: "exact",
+          });
         if (error) throw error;
         penaltyCount = count ?? 0;
+      }
+    }
+
+    // Recovery: if yesterday was a weekday and we never applied its EOD
+    // penalty (e.g. cron missed the 22:00 window), back-fill from yesterday's
+    // snapshot. Unique constraint on (task_gid, penalized_date) prevents
+    // double counting if the 22:00 sync did fire.
+    const yest = istYesterdayString();
+    const yestDow = istDayOfWeek(new Date(Date.now() - 24 * 60 * 60 * 1000));
+    const yestWasWeekday = yestDow >= 1 && yestDow <= 5;
+    let backfilledPenaltyCount = 0;
+    if (yestWasWeekday) {
+      const { data: yestP1s } = await db
+        .from("daily_snapshots")
+        .select("task_gid, task_name, task_url, assigned_to, assigned_to_gid")
+        .eq("snapshot_date", yest)
+        .eq("priority", "P1");
+      if (yestP1s && yestP1s.length) {
+        const backfill = yestP1s.map((s) => ({
+          task_gid: s.task_gid,
+          task_name: s.task_name,
+          task_url: s.task_url,
+          penalized_date: yest,
+          penalized_to: s.assigned_to,
+          penalized_to_gid: s.assigned_to_gid,
+          priority: "P1",
+          reason: "unfinished_p1_eod_backfill",
+        }));
+        const { count, error } = await db
+          .from("penalties")
+          .upsert(backfill, {
+            onConflict: "task_gid,penalized_date",
+            ignoreDuplicates: true,
+            count: "exact",
+          });
+        if (error) throw error;
+        backfilledPenaltyCount = count ?? 0;
       }
     }
 
@@ -315,7 +409,7 @@ export async function runSync(): Promise<SyncResult> {
       seenCount,
       archivedCount,
       completionCount: completions.length + archiveCompletions.length,
-      penaltyCount,
+      penaltyCount: penaltyCount + backfilledPenaltyCount,
     };
   } catch (err: any) {
     const msg = err?.message ?? String(err);

@@ -44,6 +44,12 @@ export function isWeekendIst(d: Date = new Date()): boolean {
   return dow === 0 || dow === 6;
 }
 
+// IST date string of "yesterday" relative to `d`. India has no DST so subtracting
+// 24 hours and reformatting in IST is reliable.
+export function istYesterdayString(d: Date = new Date()): string {
+  return istDateString(new Date(d.getTime() - 24 * 60 * 60 * 1000));
+}
+
 // Hour (0..23) in IST.
 export function istHour(d: Date = new Date()): number {
   const s = new Intl.DateTimeFormat("en-GB", {

@@ -118,6 +118,24 @@ create index if not exists completions_by_idx          on completions (completed
 create index if not exists completions_date_idx        on completions (completed_date);
 create index if not exists completions_completed_at_idx on completions (completed_at);
 
+-- Prevent double-credit on archive: a "left scope" credit (to_priority IS NULL)
+-- can only fire once per (task_gid, completed_date). Priority-transition credits
+-- (to_priority IS NOT NULL) are NOT covered — a single ticket can transition
+-- Preview→UAT→Staging in one day and earn 3 credits.
+-- Dedupe any pre-existing archive duplicates before adding the unique index,
+-- otherwise the create fails on tables that already accumulated rows.
+delete from completions c
+using completions d
+where c.to_priority is null
+  and d.to_priority is null
+  and c.task_gid       = d.task_gid
+  and c.completed_date = d.completed_date
+  and c.id             > d.id;
+
+create unique index if not exists completions_archive_unique_idx
+  on completions (task_gid, completed_date)
+  where to_priority is null;
+
 -- Per-day P1 penalty: if a ticket is still in P1 (Deployed in Staging - QA to verify)
 -- when the IST working day ends (~22:00 IST), the assignee gets a -1 credit row.
 -- Unique on (task_gid, penalized_date) so we don't double-penalize within the day.

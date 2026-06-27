@@ -80,7 +80,20 @@ export async function splitWithStability(
     let target: Target | null = null;
 
     if (prior?.manual_override) {
-      target = targets.find((t) => t.gid === prior.assigned_to_gid) ?? targets[0];
+      // Manual override only holds if the target is still configured.
+      // If TARGET_USERS changed and the pinned target was removed, drop the
+      // override and fall through to the regular rules.
+      const t = targets.find((t) => t.gid === prior.assigned_to_gid);
+      if (t) {
+        target = t;
+      } else {
+        console.warn(
+          `[splitter] manual_override on task ${task.gid} points to "${prior.assigned_to_gid}" ` +
+            `which is no longer in TARGET_USERS — dropping override and rebalancing.`,
+        );
+        newTasks.push(task);
+        continue;
+      }
     } else if (stickyTarget && !isOnLeave(stickyTarget.name)) {
       target = stickyTarget;
     } else if (prior && !isOnLeave(targetNameByGid(targets, prior.assigned_to_gid))) {
@@ -123,8 +136,15 @@ function pickByRemainingCapacity(
   isOnLeave: (name: string) => boolean,
 ): Target {
   const eligible = targets.filter((t) => !isOnLeave(t.name));
-  // If all targets are on leave, fall back to all targets (avoid crash; the
-  // sync still runs, the dashboard surfaces the situation).
+  // Defensive: if ALL targets are on leave, we have no good assignment. We
+  // still pick the first target (so the row gets a value and the dashboard
+  // can surface it) but log loudly so it's visible.
+  if (eligible.length === 0) {
+    console.warn(
+      "[splitter] all targets are on leave — falling back to TARGET_USERS[0] so the ticket isn't lost. " +
+        "Set at least one target to 'available' or 'regression' to restore normal balancing.",
+    );
+  }
   const pool = eligible.length > 0 ? eligible : targets;
 
   let best = pool[0];

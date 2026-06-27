@@ -10,11 +10,28 @@ export type TargetUser = {
 };
 
 // Parse "Name" or "Name:asana_gid" entries from TARGET_USERS.
+// The portion after the first ":" is the Asana user GID and must be all
+// digits — anything else is almost certainly a typo (e.g. extra colon in
+// the name) and we fail loudly rather than silently mis-parsing.
 function parseTarget(entry: string): TargetUser {
   const idx = entry.indexOf(":");
   if (idx === -1) return { gid: entry, name: entry, asana_gid: null };
+
   const name = entry.slice(0, idx).trim();
-  const asana_gid = entry.slice(idx + 1).trim() || null;
+  const asana_gid = entry.slice(idx + 1).trim();
+
+  if (!name) {
+    throw new Error(`TARGET_USERS entry "${entry}" has an empty name before the ':'`);
+  }
+  if (!asana_gid) {
+    return { gid: name, name, asana_gid: null };
+  }
+  if (!/^\d+$/.test(asana_gid)) {
+    throw new Error(
+      `TARGET_USERS entry "${entry}" — the part after ':' must be a numeric Asana GID, got "${asana_gid}". ` +
+        `If the name itself contains a ':', that's not supported.`,
+    );
+  }
   return { gid: name, name, asana_gid };
 }
 

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { config } from "@/lib/config";
 import { supabase } from "@/lib/db";
 import { istDateString } from "@/lib/ist";
+import { loadStatuses } from "@/lib/target-status";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +38,19 @@ export async function POST(req: NextRequest) {
   if (!target) {
     return NextResponse.json(
       { error: `target_gid '${target_gid}' is not in TARGET_USERS` },
+      { status: 400 },
+    );
+  }
+
+  // Refuse to reassign onto a target who's currently on leave. Otherwise the
+  // ticket would pin to them indefinitely (manual override beats the leave
+  // bypass in the splitter).
+  const statuses = await loadStatuses([target.name]);
+  if (statuses.get(target.name)?.status === "leave") {
+    return NextResponse.json(
+      {
+        error: `Cannot reassign to '${target.name}' — they are on leave. Reassign to someone available, or change their status first.`,
+      },
       { status: 400 },
     );
   }
